@@ -5,7 +5,7 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --use-env-proxy server.js"
   },
   "keywords": [],
   "author": "",

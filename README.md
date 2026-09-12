@@ -55,6 +55,27 @@ cp .env.example .env      # then put your own OPENAI_API_KEY in it
 npm start                 # listens on http://localhost:5001
 ```
 
+`npm start` runs `node --use-env-proxy server.js`. The flag makes Node honour
+`HTTPS_PROXY` / `HTTP_PROXY`, which it otherwise ignores — the OS proxy setting alone is
+not enough. If no such variable is set the flag is a no-op, so it is safe to leave in.
+
+On a proxied network (mainland China, a corporate proxy, a VPN client that only sets the
+system proxy), give it the proxy address in the same shell:
+
+```bash
+# Windows cmd
+set HTTPS_PROXY=http://127.0.0.1:7890
+set HTTP_PROXY=http://127.0.0.1:7890
+set NO_PROXY=localhost,127.0.0.1
+npm start
+
+# macOS / Linux / Git Bash
+HTTPS_PROXY=http://127.0.0.1:7890 NO_PROXY=localhost,127.0.0.1 npm start
+```
+
+Alternatively switch the VPN client to TUN / enhanced mode, where traffic is routed
+transparently and no environment variable is needed.
+
 Upload a PDF and ask a question:
 
 ```bash
@@ -95,8 +116,10 @@ Three deliberate choices worth keeping:
 ## Notes and known limitations
 
 - **Secrets** — `.env` is git-ignored; put a real key there, never in the source.
-- **Proxy** — Node's `fetch` ignores the OS proxy settings. On a proxied network run
-  `node --use-env-proxy server.js` with `HTTPS_PROXY` set.
+- **Proxy** — Node's `fetch` ignores the OS proxy settings. `npm start` already passes
+  `--use-env-proxy`, but you still have to export `HTTPS_PROXY` yourself, or run the VPN
+  client in TUN mode. Start-up succeeds either way — the failure only shows up on the
+  first `/chat`, as a long hang followed by `UND_ERR_CONNECT_TIMEOUT`.
 - **In-memory registry** — `server/store.js` keeps documents in a `Map`. Restarting the
   server drops every index and forces a re-upload; a second process would not share it.
 - **Upload is synchronous and slow** — step 3 (embedding) runs inside the `/upload`
