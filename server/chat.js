@@ -38,8 +38,11 @@ const chat = async (filePath = "./uploads/hbs-lean-startup.pdf", query) => {
   );
 
   // step 5 (part 1): LLM + prompt template
+  // The model is configurable through OPENAI_MODEL so it can be swapped without
+  // touching code. NOTE: gpt-6-astra rejects a custom `temperature` and requires
+  // the Responses API for tool calling; LangChain switches over when required.
   const model = new ChatOpenAI({
-    model: "gpt-5",
+    model: process.env.OPENAI_MODEL ?? "gpt-6-astra",
     ...(apiKey && { apiKey }),
   });
 

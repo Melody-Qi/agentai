@@ -17,7 +17,7 @@ GET /chat?question=...             v
                                    v
                     asRetriever() -> top-k chunks
                                    v
-             PromptTemplate + ChatOpenAI (gpt-5) -> answer
+             PromptTemplate + ChatOpenAI (gpt-6-astra) -> answer
 ```
 
 ## Stack
@@ -27,7 +27,7 @@ GET /chat?question=...             v
 | Runtime | Node.js (ESM), Express 5 |
 | Upload | multer (disk storage) |
 | RAG | LangChain v1 — `@langchain/openai`, `@langchain/textsplitters`, `@langchain/community` |
-| Models | `gpt-5` + `text-embedding-3-small` |
+| Models | `gpt-6-astra` (override with `OPENAI_MODEL`) + `text-embedding-3-small` |
 | Vector store | `MemoryVectorStore` (in-process, no persistence) |
 
 ## Getting started
