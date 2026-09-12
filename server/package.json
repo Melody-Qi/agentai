@@ -1,0 +1,29 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "Express backend for the Agent AI project (RAG + MCP)",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@langchain/classic": "^1.0.48",
+    "@langchain/community": "^1.1.29",
+    "@langchain/core": "^1.2.11",
+    "@langchain/openai": "^1.5.13",
+    "@langchain/textsplitters": "^1.0.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "langchain": "^1.5.11",
+    "multer": "^2.3.0",
+    "pdf-parse": "^2.4.5",
+    "serpapi": "^2.2.1",
+    "zod": "^4.6.2"
+  }
+}

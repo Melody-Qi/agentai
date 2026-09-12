@@ -1,70 +1,64 @@
-# Getting Started with Create React App
+# agentai
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Course project for the **Agent AI** module — an Express backend that answers questions
+about an uploaded PDF through a RAG (Retrieval-Augmented Generation) pipeline.
 
-## Available Scripts
+## What it does
 
-In the project directory, you can run:
+```
+POST /upload  ->  multer  ->  server/uploads/*.pdf
+                                   |
+GET /chat?question=...             v
+                            PDFLoader
+                                   v
+                 RecursiveCharacterTextSplitter  (chunk 500 / overlap 0)
+                                   v
+                  OpenAIEmbeddings -> MemoryVectorStore
+                                   v
+                    asRetriever() -> top-k chunks
+                                   v
+             PromptTemplate + ChatOpenAI (gpt-5) -> answer
+```
 
-### `npm start`
+## Stack
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+| Layer | Choice |
+| --- | --- |
+| Runtime | Node.js (ESM), Express 5 |
+| Upload | multer (disk storage) |
+| RAG | LangChain v1 — `@langchain/openai`, `@langchain/textsplitters`, `@langchain/community` |
+| Models | `gpt-5` + `text-embedding-3-small` |
+| Vector store | `MemoryVectorStore` (in-process, no persistence) |
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## Getting started
 
-### `npm test`
+```bash
+cd server
+npm install
+cp .env.example .env      # then put your own OPENAI_API_KEY in it
+npm start                 # listens on http://localhost:5001
+```
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+Upload a PDF and ask a question:
 
-### `npm run build`
+```bash
+curl -F "file=@your.pdf" http://localhost:5001/upload
+curl "http://localhost:5001/chat?question=what is this document about"
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+## Notes and known limitations
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
-
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
-
-### `npm run eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
-
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
-
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+- **Secrets** — `.env` is git-ignored; put a real key there, never in the source.
+- **Proxy** — Node's `fetch` ignores the OS proxy settings. On a proxied network run
+  `node --use-env-proxy server.js` with `HTTPS_PROXY` set.
+- **Single-user state** — `filePath` in `server/server.js` is a module-level variable shared
+  by every request, so two concurrent uploads overwrite each other. The fix is to return a
+  `fileId` on upload and scope the chat call to it.
+- **Re-embedding on every question** — `chat()` rebuilds the vector store per call, so the
+  same PDF is embedded again for each question. Building it once and caching it outside
+  `chat()` takes a typical question from roughly 15 s to 2 s.
+- **Sample document not included** — the fallback path in `server/chat.js` points at a
+  course PDF that is not part of this repository; upload your own file first.
+- **No auth, no persistence, single process** — a teaching implementation, not a service.
+- The React app in `src/` is the untouched Create React App scaffold; the work for this
+  lesson lives in `server/`.

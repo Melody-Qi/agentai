@@ -21,3 +21,9 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# backend secrets and runtime artifacts
+server/.env
+server/node_modules
+server/uploads/*
+!server/uploads/.gitkeep
