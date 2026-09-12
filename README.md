@@ -68,19 +68,29 @@ curl -H "x-client-id: $CLIENT" "http://localhost:5001/chat?docId=...&question=wh
 ## Identity and permissions
 
 This project has no login system, so the client declares who it is with an
-`x-client-id` header. Be precise about what that buys:
+`x-client-id` header. Its format is enforced — `/^[A-Za-z0-9_-]{8,64}$/` — and that is
+not cosmetic: the id becomes a **directory name** (`uploads/<clientId>/`), so without the
+check `x-client-id: ..` resolves to the project root and `a/../../b` to `./b`. Banning
+dots and slashes is what keeps `path.join` inside the upload folder.
 
 | | |
 | --- | --- |
 | It **does** stop | one client reading another client's document; guessing a `docId` returns `404` |
 | It **does not** stop | anyone forging the header. It is isolation between honest clients, **not authentication** |
 
-Two deliberate choices worth keeping:
+Three deliberate choices worth keeping:
 
 - **Not-found and not-yours are both `404`.** Answering `403` would confirm that the
   `docId` exists and belongs to someone else, leaking the existence of other people's data.
 - **The file name on disk is `<docId>.pdf`, inside `uploads/<clientId>/`.** The user's own
   file name is never used as a path, so two clients uploading `report.pdf` cannot collide.
+- **The document registry is a `Map`, not a plain object.** Keys come from outside, and a
+  plain object inherits from `Object.prototype`: lookups for `__proto__` / `constructor` /
+  `toString` come back truthy even though nothing was ever stored, and assigning to
+  `obj["__proto__"]` silently rewrites the prototype instead of adding a key. A `Map` has
+  none of that. (Note the format check above does *not* reject `__proto__` — it is 9
+  characters with no dots or slashes — so the registry's choice of data structure is a
+  separate line of defence, not a redundant one.)
 
 ## Notes and known limitations
 

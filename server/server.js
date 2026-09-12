@@ -34,11 +34,24 @@ const UPLOAD_ROOT = "uploads";
  *   + asking for someone else's docId returns 404, never their content
  *   - this is isolation, NOT authentication: anyone can forge the header.
  *     Real accounts (login -> signed JWT -> verify) are the upgrade path.
+ *
+ * The format is enforced, and that is not cosmetic: clientId is used to build a
+ * filesystem path (uploads/<clientId>/). Without the check, `x-client-id: ..`
+ * resolves to the project root and `a/../../b` to ./b, so an upload could be
+ * planted in any directory the process can write to. Only letters, digits,
+ * underscore and hyphen — no dots, no slashes — so path.join cannot escape.
  * ------------------------------------------------------------------------- */
+const CLIENT_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
 app.use((req, res, next) => {
   const clientId = req.get("x-client-id");
   if (!clientId) {
     return res.status(400).json({ error: "missing x-client-id header" });
+  }
+  if (!CLIENT_ID_PATTERN.test(clientId)) {
+    return res.status(400).json({
+      error: "x-client-id must match /^[A-Za-z0-9_-]{8,64}$/",
+    });
   }
   req.clientId = clientId;
   next();
