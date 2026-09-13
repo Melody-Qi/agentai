@@ -45,6 +45,9 @@ Every request must carry an `x-client-id` header (see **Identity** below).
 | Models | `gpt-6-astra` (override with `OPENAI_MODEL`) + `text-embedding-3-small` |
 | Vector store | `MemoryVectorStore`, cached per document in `server/store.js` |
 | Document registry | in-process `Map` (`server/store.js`) |
+| Frontend | React 19 + antd 6, built with Create React App 5 |
+| Speech in (lesson 48) | `react-speech-recognition@3.10.0` — Chrome's Web Speech API |
+| Speech out (lesson 48) | `speak-tts@2.0.8` — the browser's `speechSynthesis` |
 
 ## Getting started
 
@@ -113,6 +116,46 @@ Three deliberate choices worth keeping:
   characters with no dots or slashes — so the registry's choice of data structure is a
   separate line of defence, not a redundant one.)
 
+## Voice interface
+
+The React UI (lesson 47) is one state owner and three components: `App` holds `docId`,
+`conversation` and `isLoading`; `PdfUploader`, `ChatComponent` and `RenderQA` render it.
+Lesson 48 adds voice on top of that, in the bottom bar only:
+
+| | Chat Mode: Off | Chat Mode: On |
+| --- | --- | --- |
+| Input | the text box + `Ask` | removed from the DOM |
+| What is shown | — | `Chat Mode: On` (red) + `Click to record` |
+| How you ask | typing | speaking |
+| Is the answer spoken | no | yes |
+
+The loop is: click record → recognition ends by itself after a pause → the transcript is
+submitted to `/chat` → the answer is spoken → the microphone reopens, so a conversation
+continues until Chat Mode is switched off.
+
+Run both halves with one command from the repository root (needs the proxy exported, see
+above, because `/upload` calls OpenAI to build the index):
+
+```bash
+npm run dev        # React on :3000 and the API on :5001, via concurrently
+```
+
+Two guards exist here that the lecture version does not have, because without them the
+failure is silent rather than loud:
+
+- **A missing voice is not fatal.** `speak-tts`'s `init({ voice })` *throws* when the named
+  voice is absent — inside its own `.then()`, so `init()` rejects and the caller never gets
+  an instance, and every parameter after `setVoice()` (volume, rate, pitch) goes unapplied.
+  `"Google US English"` ships with desktop Chrome but not with Edge or Firefox. `initSpeech`
+  retries once with a fresh instance and the browser default; `talk()` also returns early
+  when there is nothing to speak with, so Chat Mode cannot turn a missing voice into a
+  `TypeError`.
+- **The init is kept in a ref and `setSpeech` in a per-effect flag.** React's `StrictMode`
+  double-mounts effects, so creating the instance inside the effect would build two. Note
+  the two are separate on purpose: a single `cancelled` flag flipped by the first cleanup is
+  never restored, which drops the resolved instance and leaves speech permanently undefined
+  — the UI looks fine and simply never speaks.
+
 ## Notes and known limitations
 
 - **Secrets** — `.env` is git-ignored; put a real key there, never in the source.
@@ -126,8 +169,14 @@ Three deliberate choices worth keeping:
   request, so a large PDF makes that request take seconds. The fix is a job queue plus a
   `status` field (`processing` / `ready` / `failed`) that `/chat` checks.
 - **Sample document not included** — no PDF ships with this repository; upload your own.
-- The React app in `src/` is the untouched Create React App scaffold; the work for this
-  lesson lives in `server/`.
+- **Speech recognition needs the internet and a secure context.** Chrome uploads the audio
+  to a recognition service, so behind a network that blocks it the record button will look
+  like it works and produce nothing. `webkitSpeechRecognition` is also only exposed on
+  `https` and `localhost`, so a demo served over a LAN IP (`http://192.168.x.x:3000`) loses
+  the API entirely. Text-to-speech, by contrast, is local and works offline.
+- **`SERPAPI_KEY` is documented but unread.** `.env.example` reserves the variable for the
+  next lesson's web-search tool; no code reads it yet. Keys belong in `server/.env` — a
+  `REACT_APP_` variable, or anything else in `src/`, is compiled into the public bundle.
 
 ## Upgrade path
 

@@ -17,8 +17,16 @@
 .rag-answer { background: #e6f7ff; border-left: 4px solid #1890ff; }
 .mcp-answer { background: #f6ffed; border-left: 4px solid #52c41a; }
 .chat-component { position: fixed; z-index: 10; bottom: 20px; left: 10%; width: 80%; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.96); box-shadow: 0 4px 18px rgba(0,0,0,.14); }
+/* Lesson 48: the lecture used an inline `searchContainer` style; the search box
+   flexes so it keeps the width it has in the lecture screenshots, with the two
+   voice buttons pinned to its right. */
+.chat-controls { display: flex; justify-content: center; align-items: center; }
+.chat-controls .ant-input-group-wrapper { flex: 1; }
+.chat-hint { margin: 8px 0 0; font-size: 12px; text-align: center; color: #d4380d; }
 @media (max-width: 600px) {
   .app-content { width: 92%; padding-top: 24px; }
   .user-bubble, .rag-answer, .mcp-answer { max-width: 88%; }
   .chat-component { left: 4%; width: 92%; }
+  .chat-controls { flex-wrap: wrap; gap: 8px; }
+  .chat-controls .ant-btn { margin-left: 0 !important; }
 }

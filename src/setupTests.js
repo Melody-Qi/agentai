@@ -28,3 +28,12 @@ if (!window.ResizeObserver) {
   };
 }
 
+// react-speech-recognition (lesson 48) ships pre-compiled code whose module body
+// calls regeneratorRuntime.mark(...). The webpack build injects that runtime into
+// node_modules through babel-preset-react-app's polyfill plugins, but Jest skips
+// node_modules entirely (transformIgnorePatterns), so the global is missing and
+// the suite dies at import time with "regeneratorRuntime is not defined".
+// regenerator-runtime is already in the tree as a react-app-polyfill dependency.
+import "regenerator-runtime/runtime";
+
+
