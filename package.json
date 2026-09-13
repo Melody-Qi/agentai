@@ -3,10 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@ant-design/icons": "^6.3.4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^13.5.0",
+    "antd": "^6.6.3",
+    "axios": "^1.20.0",
+    "concurrently": "^10.0.5",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-scripts": "5.0.1",
@@ -16,13 +20,22 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "server": "cd server && npm run start",
+    "dev": "concurrently --kill-others-on-fail \"npm start\" \"npm run server\""
   },
   "eslintConfig": {
     "extends": [
       "react-app",
       "react-app/jest"
     ]
+  },
+  "jest": {
+    "moduleNameMapper": {
+      "^@rc-component/(pagination|picker)/(generate|locale)/(.*)$": "<rootDir>/node_modules/@rc-component/$1/lib/$2/$3",
+      "^@rc-component/(pagination|picker)/(generate|locale)$": "<rootDir>/node_modules/@rc-component/$1/lib/$2",
+      "^@ant-design/colors/(?:es|esm)/(.*)$": "<rootDir>/node_modules/@ant-design/colors/lib/$1"
+    }
   },
   "browserslist": {
     "production": [

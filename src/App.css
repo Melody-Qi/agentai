@@ -1,38 +1,24 @@
-.App {
-  text-align: center;
-}
-
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
-}
-
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
-}
-
-.App-link {
-  color: #61dafb;
-}
-
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.app-shell { min-height: 100vh; background: #fff; }
+.app-header { display: flex; align-items: center; justify-content: center; }
+.app-header h2 { margin: 0; color: #fff; }
+.app-content { width: min(1000px, 90%); margin: 0 auto; padding: 48px 0 110px; }
+.upload-section { margin-bottom: 28px; text-align: center; }
+.upload-section .ant-tag { margin-top: 14px; }
+.upload-section .ant-upload-list { width: fit-content; margin: 0 auto; text-align: left; }
+.qa-list { min-height: 280px; display: flex; flex-direction: column; gap: 18px; align-items: stretch; }
+.qa-list > .ant-empty, .qa-list > .ant-spin { align-self: center; }
+.qa-item { width: 100%; }
+.user-container { text-align: right; }
+.user-bubble { max-width: 50%; display: inline-block; padding: 10px; border-radius: 10px; color: #fff; background: #1890ff; text-align: left; }
+.agent-container { text-align: left; }
+.answer-block { margin-top: 10px; }
+.answer-label { margin-bottom: 4px; font-weight: 600; }
+.rag-answer, .mcp-answer { max-width: 70%; display: inline-block; padding: 10px; border-radius: 10px; color: #111; white-space: pre-wrap; }
+.rag-answer { background: #e6f7ff; border-left: 4px solid #1890ff; }
+.mcp-answer { background: #f6ffed; border-left: 4px solid #52c41a; }
+.chat-component { position: fixed; z-index: 10; bottom: 20px; left: 10%; width: 80%; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.96); box-shadow: 0 4px 18px rgba(0,0,0,.14); }
+@media (max-width: 600px) {
+  .app-content { width: 92%; padding-top: 24px; }
+  .user-bubble, .rag-answer, .mcp-answer { max-width: 88%; }
+  .chat-component { left: 4%; width: 92%; }
 }
