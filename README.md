@@ -1,7 +1,9 @@
 # agentai
 
 Course project for the **Agent AI** module — an Express backend that answers questions
-about an uploaded PDF through a RAG (Retrieval-Augmented Generation) pipeline.
+about an uploaded PDF through a RAG (Retrieval-Augmented Generation) pipeline, over a
+chain of interchangeable model providers that keeps working when one of them runs out
+of credit.
 
 ## What it does
 
@@ -11,17 +13,19 @@ and run **per question**, embedding only the question itself.
 
 ```
 POST /upload   (once per document)                 GET /chat   (once per question)
-  multer                                            x-client-id + docId
-     v                                                   v
-  uploads/<clientId>/<docId>.pdf                    registry lookup + owner check
-     v                                                   v
-  PDFLoader                                         asRetriever() -> top-k chunks
-     v                                                   v
-  RecursiveCharacterTextSplitter                    PromptTemplate
-     v                                                   v
-  OpenAIEmbeddings -> MemoryVectorStore  ----+      ChatOpenAI (gpt-6-astra) -> answer
-     |                                       |
-     +--> cached in server/store.js  ---------+   (no re-embedding on question 2, 3, 4 ...)
+  multer                                           x-client-id + docId
+     v                                             v
+  uploads/<clientId>/<docId>.pdf                   registry lookup + owner check
+     v                                             v
+  PDFLoader                                        asRetriever() -> top-k chunks
+     v                                             v
+  RecursiveCharacterTextSplitter                   PromptTemplate
+     v                                             v
+  embedder: server/llm.js                          chat model: server/llm.js
+     v                                             v
+  MemoryVectorStore                                answer
+     |
+     +--> cached in server/store.js   (no re-embedding on question 2, 3, 4 ...)
 ```
 
 ## Endpoints
@@ -34,6 +38,7 @@ Every request must carry an `x-client-id` header (see **Identity** below).
 | GET | `/chat` | `?docId=...&question=...` | `{ ragAnswer, mcpAnswer }` |
 | GET | `/documents` | — | the caller's own documents only |
 | DELETE | `/documents/:docId` | — | `204`, only if the caller owns it |
+| GET | `/llm/providers` | — | the provider chain, and which entries are benched |
 
 ## Stack
 
@@ -42,7 +47,7 @@ Every request must carry an `x-client-id` header (see **Identity** below).
 | Runtime | Node.js (ESM), Express 5 |
 | Upload | multer (disk storage, one folder per client) |
 | RAG | LangChain v1 — `@langchain/openai`, `@langchain/textsplitters`, `@langchain/community` |
-| Models | `gpt-6-astra` (override with `OPENAI_MODEL`) + `text-embedding-3-small` |
+| Models | a fallback chain in `server/llm.js` — OpenAI, Zhipu, SiliconFlow, Bailian, Ollama (see **Models** below) |
 | Vector store | `MemoryVectorStore`, cached per document in `server/store.js` |
 | Document registry | in-process `Map` (`server/store.js`) |
 | Frontend | React 19 + antd 6, built with Create React App 5 |
@@ -54,7 +59,8 @@ Every request must carry an `x-client-id` header (see **Identity** below).
 ```bash
 cd server
 npm install
-cp .env.example .env      # then put your own OPENAI_API_KEY in it
+cp .env.example .env      # then put your own OPENAI_API_KEY in it,
+                          # or set ZHIPU_API_KEY (free, no card) and drop OpenAI
 npm start                 # listens on http://localhost:5001
 ```
 
@@ -88,6 +94,74 @@ curl -H "x-client-id: $CLIENT" -F "file=@your.pdf" http://localhost:5001/upload
 
 curl -H "x-client-id: $CLIENT" "http://localhost:5001/chat?docId=...&question=what+is+this+document+about"
 ```
+
+## Models: one chain, four free providers
+
+Every model call in this project goes through `server/llm.js`, which walks an
+ordered list of providers and stops at the first one that answers:
+
+| Order | Provider | Cost | Card needed | Chat model | Embeddings |
+| --- | --- | --- | --- | --- | --- |
+| 1 | OpenAI | paid | yes | `gpt-6-astra` | `text-embedding-3-small` |
+| 2 | Zhipu (智谱) | **free, no token cap** | **no** — phone / WeChat | `glm-4.7-flash` | `embedding-3` |
+| 3 | SiliconFlow (硅基流动) | free tier, ~30 req/min | **no** — phone | `Qwen/Qwen3-8B` | `BAAI/bge-m3` |
+| 4 | Alibaba Bailian (百炼) | 1M free tokens per model, 90 days | no, but real-name | `qwen-turbo` | `text-embedding-v3` |
+| 5 | Ollama | free, local | no | `qwen2.5:7b` | `nomic-embed-text` |
+
+The four middle entries were chosen for one property: **a mainland-China user can
+sign up with a phone number and no credit card.** Foreign-only signups (Gemini,
+Groq) and card-required trials are excluded on purpose — they are useless to
+whoever has to run this.
+
+All five speak the OpenAI wire protocol, so swapping providers is a base URL and a
+key rather than a second SDK. Set `ZHIPU_API_KEY` and OpenAI becomes optional:
+drop it from `LLM_PROVIDER_ORDER` and the app never spends money.
+
+```bash
+# never spend money
+LLM_PROVIDER_ORDER=zhipu,siliconflow,dashscope
+```
+
+### What counts as "try the next one"
+
+| Failure | Retried on the next provider? | Benched for |
+| --- | --- | --- |
+| 401 / 403, model no longer exists | yes | 10 min |
+| 402 / 429 `insufficient_quota` — out of credit | yes | 30 min |
+| 429 rate limit | yes | 20 s |
+| DNS, TLS, timeout, 5xx | yes | 30 s |
+| 400 / 413 / 422 — **our** request is malformed | **no** | — |
+
+That last row is the important one. A bad request is the same bad request at every
+provider, so replaying it just multiplies the same error N times and buries the
+real cause. The chain stops and reports it.
+
+Benches are tracked per **(capability, provider)** pair, not per provider. An
+exhausted *embedding* quota and a working *chat* model are billed and rate-limited
+separately, so one must not silence the other.
+
+```bash
+# which providers does the app think it has, and which are benched?
+curl -H "x-client-id: any-id-of-8-chars" http://localhost:5001/llm/providers
+```
+
+### Embeddings get their own chain, and a floor
+
+Embeddings cannot share the chat chain — different models, separately metered — so
+`EMBEDDING_PROVIDER_ORDER` is its own list. Its last entry, `local`, is **not a
+provider**: it is a built-in hash embedder (tokens plus character bigrams, FNV-1a,
+512 dimensions) that needs no network at all. It exists so a PDF can always be
+indexed when every key is dead.
+
+It is a floor, not a default. Similarity is lexical, so "what is this document
+about" retrieves worse than with a real model. `/upload` and `GET /documents`
+both report which embedder indexed the document, so a quiet quality regression is
+visible rather than mysterious.
+
+Once a document is indexed, that document stays on that embedder: the query must
+be embedded by the same model that embedded the chunks, or the vectors are not in
+the same space and the results are noise. `createStickyEmbedder()` locks the
+choice at index time and reuses it for every question.
 
 ## Identity and permissions
 
@@ -174,9 +248,15 @@ failure is silent rather than loud:
   like it works and produce nothing. `webkitSpeechRecognition` is also only exposed on
   `https` and `localhost`, so a demo served over a LAN IP (`http://192.168.x.x:3000`) loses
   the API entirely. Text-to-speech, by contrast, is local and works offline.
-- **`SERPAPI_KEY` is documented but unread.** `.env.example` reserves the variable for the
-  next lesson's web-search tool; no code reads it yet. Keys belong in `server/.env` — a
-  `REACT_APP_` variable, or anything else in `src/`, is compiled into the public bundle.
+- **`SERPAPI_KEY` is optional, and spending it is easy.** It backs the `search_web` MCP
+  tool (lesson 49), but the free plan is 250 searches a month and every question asked
+  through the UI costs one, so leave it blank and the app answers from the PDF alone — it
+  says so rather than failing. `/chat?search=0` skips the search for one request. Keys
+  belong in `server/.env` — a `REACT_APP_` variable, or anything else in `src/`, is compiled
+  into the public bundle.
+- **Embeddings fall back to a lexical hash** when no embedding key works (see **Models**).
+  Retrieval still functions; it just retrieves worse. `/upload` reports which embedder was
+  used, so check it before trusting a bad answer.
 
 ## Upgrade path
 

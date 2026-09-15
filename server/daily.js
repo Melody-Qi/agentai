@@ -73,7 +73,9 @@ dotenv.config();
 /* -------------------------------------------------------------------------- *
  * Tunables
  * -------------------------------------------------------------------------- */
-const DATA_FILE = path.join("data", "daily.json");
+// Overridable so a verification run (or a second instance) does not write over
+// the subscriptions and inbox of the server already running next to it.
+const DATA_FILE = process.env.DAILY_DATA_FILE ?? path.join("data", "daily.json");
 
 // The project's user is in China and the eventual deployment target is us-east-2.
 // Those are eight hours apart, which is the entire difference between "08:00" and

@@ -56,8 +56,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { ChatOpenAI } from "@langchain/openai";
 import { PromptTemplate } from "@langchain/core/prompts";
+// The summarizer used to be built here, from OPENAI_API_KEY directly. It is now
+// whatever llm.js can reach: if OpenAI is down this file neither knows nor
+// cares, which is the point.
+import { chatSession, contentToText } from "./llm.js";
 
 // ESM has no __dirname. Both lines are required, not stylistic: `join(__dirname,
 // "mcp-server.js")` is how the child process is located, and without this the
@@ -220,8 +223,6 @@ export { TOOL_NAME, SERVER_PATH };
  * from the open web.
  */
 const chatMCP = async (query) => {
-  const apiKey = process.env.OPENAI_API_KEY;
-
   try {
     // Ensure client is connected (reuse existing connection)
     await ensureConnected();
@@ -275,13 +276,13 @@ const chatMCP = async (query) => {
       return { text: `No web results found for "${query}".` };
     }
 
-    // [DELTA 3] Same model id resolution as chat.js -- one env var for the
-    // whole project. Built here, after the guards, because this is the only
-    // branch that needs it.
-    const model = new ChatOpenAI({
-      model: process.env.OPENAI_MODEL ?? "gpt-6-astra",
-      ...(apiKey && { apiKey }),
-    });
+    // [DELTA 3] The summarizer comes from llm.js, the same chain chat.js uses, so
+    // the two halves of the project cannot drift onto different models -- and a
+    // provider that is down costs this call one fallback rather than a failure.
+    // Built here, after the guards, because this is the only branch that needs
+    // it: creating a session reads the environment and nothing else, so the
+    // "this path spends nothing" shape above is preserved exactly.
+    const session = chatSession({ label: "mcp-summary" });
 
     const answerTemplate = `Summarize the search result.
 
@@ -293,9 +294,9 @@ Helpful Answer:`;
     const prompt = PromptTemplate.fromTemplate(answerTemplate);
     const formattedPrompt = await prompt.format({ searchResults });
 
-    const response = await model.invoke(formattedPrompt);
+    const response = await session.invoke(formattedPrompt);
 
-    return { text: response.content };
+    return { text: contentToText(response.content) };
   } catch (error) {
     // If connection error, reset client to allow reconnection on next request
     // (the slides' comment -- and the reason the fast path can be trusted).

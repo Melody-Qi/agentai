@@ -3,11 +3,19 @@ import crypto from "node:crypto";
 /**
  * Document registry — the "who owns what, and where is its index" table.
  *
- * One record per uploaded PDF. It answers three different questions:
+ * One record per uploaded PDF. It answers four different questions:
  *
  *   who may read it     -> ownerId      (permission check on every request)
  *   where is the file   -> filePath     (re-index, delete)
  *   how do we answer    -> vectorStore  (the cached index: embedded ONCE)
+ *   how good is it      -> embedder     (which embedder built that index)
+ *
+ * The last one is not bookkeeping. A vector store is only meaningful against the
+ * embedder that filled it, and this project now has several: a real embedding
+ * model on one of five providers, or the local lexical fallback when none of
+ * them is reachable. "local" means retrieval matches words, not meaning, and
+ * that is a difference the user should be able to see rather than infer from a
+ * disappointingly literal answer.
  *
  * NOTE (course compromise): this is a Map in memory. Restart the process and
  * every document is gone; a second process would not see it either. The shape
@@ -39,5 +47,6 @@ export const toPublic = ({
   size,
   pageCount,
   chunkCount,
+  embedder,
   createdAt,
-}) => ({ docId, originalName, size, pageCount, chunkCount, createdAt });
+}) => ({ docId, originalName, size, pageCount, chunkCount, embedder, createdAt });

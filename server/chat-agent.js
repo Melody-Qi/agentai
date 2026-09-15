@@ -52,7 +52,6 @@
  *     stale memory instead of searching, it just sounds confident
  * ---------------------------------------------------------------------------
  */
-import { ChatOpenAI } from "@langchain/openai";
 import {
   HumanMessage,
   SystemMessage,
@@ -60,8 +59,12 @@ import {
 } from "@langchain/core/messages";
 import { listAgentTools, callMcpTool } from "./chat-mcp.js";
 import { retrieveChunks } from "./chat.js";
+import { chatSession, contentToText } from "./llm.js";
 
-const MODEL_ID = () => process.env.OPENAI_MODEL ?? "gpt-6-astra";
+// The model id used to live here, as it also did in chat.js and chat-mcp.js --
+// three copies of one decision, and no code anywhere that answered "and what if
+// it says no?". llm.js now owns which provider answers; this file owns only what
+// to ask it and when to stop.
 
 // Guardrails. Every one of these exists because the model is not in charge of
 // the bill, the quota, or the event loop.
@@ -82,16 +85,11 @@ const DOC_CHUNKS = Number(process.env.AGENT_DOC_CHUNKS ?? 4);
  * plausible-looking value that renders in the UI as `[object Object]`. Measured,
  * not guessed: see the spike in the Lesson 49 notes. Any code that consumes a
  * model response on this path has to flatten first.
+ *
+ * The implementation moved to llm.js so the two other model paths can use it
+ * too, and is aliased back to the short name this file reads better with.
  */
-const textOf = (content) => {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block) => typeof block === "string" || block?.type === "text")
-    .map((block) => (typeof block === "string" ? block : block.text ?? ""))
-    .join("")
-    .trim();
-};
+const textOf = contentToText;
 
 /**
  * The document tool. Unlike the search tool this one is not in another process
@@ -185,6 +183,21 @@ const runTool = async (call, { vectorStore, quota }) => {
 };
 
 /**
+ * What the caller should know about who answered, without leaking what the
+ * provider said.
+ *
+ * `attempts` records the *kind* of each failure and deliberately not its message:
+ * an authentication error from OpenAI reads "Incorrect API key provided:
+ * sk-proj-abc...L4UA", and this object is returned to the browser and stored in
+ * the daily inbox. The first and last characters of a key are not a secret worth
+ * keeping -- but they are not something to scatter into a UI either.
+ */
+const sessionMeta = (session) => ({
+  provider: session.providerId,
+  fallbacks: session.attempts.map(({ provider, kind }) => ({ provider, kind })),
+});
+
+/**
  * Answer a question, letting the model decide what to look up.
  *
  * Returns the answer plus the trace of what it decided -- which is the part
@@ -198,29 +211,33 @@ export const runAgent = async (question, { vectorStore = null, maxRounds = MAX_R
   const mcpTools = await listAgentTools();
   const tools = vectorStore ? [DOC_TOOL, ...mcpTools] : mcpTools;
 
-  // useResponsesApi: gpt-6-astra rejects function tools on /v1/chat/completions
-  // ("Function tools with reasoning_effort are not supported... use
-  // /v1/responses"), so the tool-calling path has to be the Responses API. The
-  // non-tool paths elsewhere in the project are unaffected.
-  const model = new ChatOpenAI({
-    model: MODEL_ID(),
-    useResponsesApi: true,
-  }).bindTools(tools);
-
-  // The model that writes the final answer once the round budget is spent. No
-  // tools bound, so its only possible output is text -- which is how the loop is
-  // guaranteed to terminate on the next line after this one.
-  const summarizer = new ChatOpenAI({
-    model: MODEL_ID(),
-    useResponsesApi: true,
-  });
+  // One session for the whole question, so whichever provider answers round 1
+  // keeps answering. A mid-conversation fallback then resumes at the round that
+  // failed rather than replaying the conversation on a new provider -- replaying
+  // would re-run the tool calls, and the searches are the expensive half
+  // (SerpApi: 250 free searches a month in total, for everything).
+  //
+  // The tool-calling call needs the Responses API on OpenAI but not on the free
+  // providers, so that switch is made per provider inside llm.js, where the
+  // provider table lives. It is a property of the provider, not of this loop.
+  const session = chatSession({ needsTools: true, label: "agent" });
 
   const messages = [new SystemMessage(systemPrompt), new HumanMessage(question)];
   const trace = [];
   const quota = { used: 0 };
 
+  // No configured provider claims to support function calling. The call is still
+  // made -- providers vary in what they advertise, and one that ignores `tools`
+  // answers instead of erroring -- but it is recorded, because "the agent answered
+  // from memory without searching" is indistinguishable from a good answer when
+  // you only read the answer. See llm.js section 5 for why this degrades instead
+  // of refusing.
+  if (session.toolsUnverified) {
+    trace.push({ round: 0, action: "tools-unverified" });
+  }
+
   for (let round = 1; round <= maxRounds; round++) {
-    const ai = await model.invoke(messages);
+    const ai = await session.invoke(messages, { tools });
     // Pushed before anything else: an assistant message carrying tool_calls is
     // half a turn, and the API rejects the next request if its tool results are
     // missing. Keeping request and results adjacent is what makes the history
@@ -240,6 +257,7 @@ export const runAgent = async (question, { vectorStore = null, maxRounds = MAX_R
         webSearches: quota.used,
         rounds: round,
         trace,
+        ...sessionMeta(session),
       };
     }
 
@@ -269,7 +287,10 @@ export const runAgent = async (question, { vectorStore = null, maxRounds = MAX_R
   // rather than looping -- the alternative is a request that never returns,
   // which is the same failure mode [DELTA 2] fixed one layer down.
   trace.push({ round: maxRounds + 1, action: "forced-answer" });
-  const final = await summarizer.invoke(messages);
+  // No `tools` on this call, and that is the whole mechanism: not binding them is
+  // what makes text the only possible output, which is how the loop is
+  // guaranteed to terminate on this line instead of asking to search again.
+  const final = await session.invoke(messages);
 
   return {
     text: textOf(final.content),
@@ -277,6 +298,7 @@ export const runAgent = async (question, { vectorStore = null, maxRounds = MAX_R
     webSearches: quota.used,
     rounds: maxRounds,
     trace,
+    ...sessionMeta(session),
   };
 };
 

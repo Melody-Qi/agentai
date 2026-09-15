@@ -12,6 +12,8 @@ import runAgent from "./chat-agent.js";
 // tick, the subscription registry, the inbox. One line at the top of this file
 // instead of sixteen, and `daily.tick()` says where it came from.
 import * as daily from "./daily.js";
+// Read-only view of the model fallback chain, for the diagnostic route below.
+import { describeProviders } from "./llm.js";
 import {
   newDocId,
   saveDocument,
@@ -47,8 +49,11 @@ app.use(express.json()); // /daily takes a JSON body; every other route uses que
  * ------------------------------------------------------------------------- */
 app.post("/daily/tick", handleDailyTick);
 
-const PORT = 5001;
-const UPLOAD_ROOT = "uploads";
+// Env-overridable because every host that is not a laptop sets PORT itself
+// (App Runner, Cloud Run, Heroku), and because it lets a verification run start a
+// second copy without evicting the one already on 5001.
+const PORT = Number(process.env.PORT ?? 5001);
+const UPLOAD_ROOT = process.env.UPLOAD_ROOT ?? "uploads";
 
 /* ---------------------------------------------------------------------------
  * 1. Identity — who is asking?
@@ -110,26 +115,40 @@ const assignDocId = (req, res, next) => {
 };
 
 // POST /upload  (multipart field "file", header x-client-id)
-// -> 201 { docId, originalName, pageCount, chunkCount }
+// -> 201 { docId, originalName, pageCount, chunkCount, embedder }
 app.post("/upload", assignDocId, upload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "missing file field 'file'" });
   }
 
-  // Steps 1-3 (load / split / embed) run exactly here, exactly once. This is
-  // the slow half and it is paid on upload instead of on every question.
-  const { vectorStore, pageCount, chunkCount } = await buildIndex(
-    req.file.path
-  );
+  let index;
+  try {
+    // Steps 1-3 (load / split / embed) run exactly here, exactly once. This is
+    // the slow half, and it used to be the half that required a working paid
+    // key: 60 chunks is 60 embedding calls, and the first one that failed took
+    // the whole request with it.
+    index = await buildIndex(req.file.path);
+  } catch (error) {
+    // multer has already written the file to disk, and a docId that was never
+    // registered can never be deleted through DELETE /documents/:docId -- so
+    // without this line the failure is not just a 500, it is a 500 plus a file
+    // on disk that nothing will ever collect. The 25MB limit is the worst case.
+    fs.rmSync(req.file.path, { force: true });
+    console.error(`Upload failed for ${req.file.originalname}: ${error.message}`);
+    return res
+      .status(502)
+      .json({ error: `could not index the PDF: ${error.message}` });
+  }
 
   const doc = saveDocument(req.docId, {
     ownerId: req.clientId,
     filePath: req.file.path,
     originalName: req.file.originalname,
     size: req.file.size,
-    pageCount,
-    chunkCount,
-    vectorStore,
+    pageCount: index.pageCount,
+    chunkCount: index.chunkCount,
+    vectorStore: index.vectorStore,
+    embedder: index.embedder,
   });
 
   res.status(201).json({
@@ -137,6 +156,11 @@ app.post("/upload", assignDocId, upload.single("file"), async (req, res) => {
     originalName: doc.originalName,
     pageCount: doc.pageCount,
     chunkCount: doc.chunkCount,
+    // Which embedder indexed this document. "local" means the free lexical
+    // fallback -- retrieval will match words rather than meaning -- and saying so
+    // when the document appears is more useful than letting the user infer it
+    // from the first disappointing answer.
+    embedder: doc.embedder,
   });
 });
 
@@ -202,7 +226,19 @@ app.get("/chat", async (req, res) => {
   }
 
   // Steps 4-5 over the cached store: only the question gets embedded.
-  const text = await answerQuestion(doc.vectorStore, question);
+  let text;
+  try {
+    text = await answerQuestion(doc.vectorStore, question);
+  } catch (error) {
+    // 502, the same code /daily/:id/run uses for the same reason: the request was
+    // fine, the thing that writes answers is not. Un-caught, this rejection
+    // reached Express's default handler, which replies with an HTML page -- and a
+    // JSON client cannot read that, so the UI showed axios's generic
+    // "Request failed with status code 500" with the real cause nowhere.
+    return res
+      .status(502)
+      .json({ error: `could not answer from the document: ${error.message}` });
+  }
 
   // Then the same question, answered from the open web by a tool in another
   // process. Sequential, not Promise.all: the two calls share one OpenAI rate
@@ -423,6 +459,26 @@ app.delete("/documents/:docId", (req, res) => {
 });
 
 /* ---------------------------------------------------------------------------
+ * 3d. Which model is actually answering?
+ *
+ * Every route above can silently land on a provider other than the one
+ * configured first -- that is the whole feature -- and there is otherwise no way
+ * to see it without reading the server's stdout. This answers it: the chain in
+ * order, which providers have a key, which are in a cooldown and until when, and
+ * what each one costs.
+ *
+ * Mounted *below* the identity middleware, unlike /daily/tick. It exposes no
+ * user data, but it does expose which credentials this server holds and why
+ * requests are failing, and the "only one door above the wall" rule in section 0
+ * is worth more than the convenience of not sending a header.
+ *
+ * No key values, ever -- only whether one is present.
+ * ------------------------------------------------------------------------- */
+app.get("/llm/providers", (req, res) => {
+  res.json(describeProviders());
+});
+
+/* ---------------------------------------------------------------------------
  * 4. The tick endpoint's handler
  *
  * A function declaration on purpose: the route near the top of this file refers
@@ -454,6 +510,26 @@ async function handleDailyTick(req, res) {
 }
 
 /* ---------------------------------------------------------------------------
+ * 4b. The last resort
+ *
+ * Express 5 forwards a rejected promise from a handler straight here, so this is
+ * what any un-caught async route ends up returning. Without it, that is Express's
+ * own HTML error page: readable by a human, unparseable by the React client,
+ * which then shows axios's generic "Request failed with status code 500" and the
+ * real cause nowhere.
+ *
+ * Every route that can realistically fail has its own try/catch above, because
+ * each deserves a more specific status -- 502 for "the model is down", 503 for
+ * "no key configured", 404 for "not yours". This is for the ones that do not, and
+ * its whole job is to make sure the failure is still JSON.
+ * ------------------------------------------------------------------------- */
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, error);
+  res.status(500).json({ error: error.message ?? "internal error" });
+});
+
+/* ---------------------------------------------------------------------------
  * 5. Shutdown
  *
  * chat-mcp.js spawns a child process (`node mcp-server.js`). Strictly speaking
@@ -483,6 +559,20 @@ app.listen(PORT, () => {
     WEB_SEARCH_ENABLED
       ? "MCP web search: enabled (search_web via serpapi-search)"
       : "MCP web search: DISABLED (set SERPAPI_KEY in server/.env to enable)"
+  );
+
+  // Print the fallback chain once, at boot, because the alternative is finding
+  // out which provider answered by reading a stack trace. An empty chain is not a
+  // soft warning -- every model-backed route will fail -- so it says so loudly
+  // and names the two keys that cost nothing and need no credit card.
+  const chain = describeProviders().chatOrder;
+  console.log(
+    chain.length
+      ? `Model chain: ${chain.join(" -> ")} (first one that answers wins)`
+      : "Model chain: EMPTY. No provider key is set, so /chat, /chat-agent and the\n" +
+        "  daily assistant will all fail. Set ZHIPU_API_KEY (free, phone signup, no\n" +
+        "  card: https://open.bigmodel.cn) or SILICONFLOW_API_KEY (https://siliconflow.cn)\n" +
+        "  in server/.env and restart."
   );
 
   // The daily assistant. An in-process timer is the right default for a course
