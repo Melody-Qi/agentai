@@ -23,6 +23,13 @@
  *    and the caller sees "connection closed" instead of "your API key is
  *    missing". Returning the error as ordinary tool *content* keeps the channel
  *    alive and lets the model read the failure and react to it.
+ *
+ * 3. "It failed" and "it found nothing" are different answers, and neither one
+ *    is text worth summarizing. So neither is expressed as prose: a failure sets
+ *    `isError`, and a search with nothing in it returns an EMPTY content array.
+ *    The caller can then tell the three outcomes apart structurally -- success,
+ *    failure, nothing -- instead of pattern-matching an "Error: " prefix, and
+ *    only the success case is worth paying a model to read.
  * ---------------------------------------------------------------------------
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -63,19 +70,45 @@ export const TOOL_NAME = "search_web";
  * paid on every single question. The raw JSON is still the fallback, so an
  * unexpected response shape degrades to the slides' behaviour instead of
  * silently returning nothing.
+ *
+ * The one case that gets an empty string instead is a search with nothing to
+ * read. A zero-result response is ~1 KB of query echo, timing and pagination;
+ * the only possible summary of it is "no results", and the slides' version pays
+ * a full model call to write that sentence. Returning "" makes "there is
+ * nothing here" something the caller can test for rather than something it has
+ * to recognise by reading.
  */
 export const formatSearchResults = (results) => {
   const organic = Array.isArray(results?.organic_results) ? results.organic_results : [];
-  if (organic.length === 0) return JSON.stringify(results);
 
-  return organic
-    .map((item, index) => {
-      const title = item.title ?? "(untitled)";
-      const link = item.link ?? "";
-      const snippet = item.snippet ?? "";
-      return `${index + 1}. ${title}\n${link}\n${snippet}`;
-    })
-    .join("\n\n");
+  if (organic.length > 0) {
+    return organic
+      .map((item, index) => {
+        const title = item.title ?? "(untitled)";
+        const link = item.link ?? "";
+        const snippet = item.snippet ?? "";
+        return `${index + 1}. ${title}\n${link}\n${snippet}`;
+      })
+      .join("\n\n");
+  }
+
+  // A handful of blocks are worth reading even without organic results (a direct
+  // answer, a knowledge panel, news). Anything else is bookkeeping.
+  const WORTH_READING = [
+    "answer_box",
+    "knowledge_graph",
+    "related_questions",
+    "shopping_results",
+    "sports_results",
+    "local_results",
+    "news_results",
+  ];
+  const hasContent = WORTH_READING.some((key) => {
+    const value = results?.[key];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  });
+
+  return hasContent ? JSON.stringify(results) : "";
 };
 
 // 1. Create the MCP server instance.
@@ -98,6 +131,8 @@ server.registerTool(
   async ({ query, num = 10 }) => {
     if (!SERPAPI_KEY) {
       return {
+        // A missing key is a configuration failure, not a search result.
+        isError: true,
         content: [
           {
             type: "text",
@@ -115,17 +150,17 @@ server.registerTool(
         api_key: SERPAPI_KEY,
       });
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatSearchResults(results),
-          },
-        ],
-      };
+      const text = formatSearchResults(results);
+
+      // Success with nothing in it: not an error (isError stays false, the
+      // search worked), but there is nothing to hand over. An empty content
+      // array says that in the protocol itself.
+      return text ? { content: [{ type: "text", text }] } : { content: [] };
     } catch (error) {
-      // Returned, not thrown -- see the header comment.
+      // Returned, not thrown -- see the header comment. isError is what marks it
+      // as a failure on the wire.
       return {
+        isError: true,
         content: [
           {
             type: "text",

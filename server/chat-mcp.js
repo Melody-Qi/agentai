@@ -42,6 +42,14 @@
  *   [DELTA 3] model id. The slides hard-code model: "gpt-5". chat.js reads
  *             process.env.OPENAI_MODEL (default gpt-6-astra), so the two halves
  *             of the project cannot drift apart.
+ *   [DELTA 4] a model call for nothing. The slides summarize whatever comes
+ *             back, including nothing: they substitute the literal string "No
+ *             search results available" and ask the model to summarize *that*.
+ *             One wasted call, and the user gets a sentence about the absence of
+ *             data -- or worse, a tidy paraphrase of an error message presented
+ *             as if it were a search result. Measured: all three outcomes
+ *             (tool failed / found nothing / found something) cost one call.
+ *             Now only the third does.
  * ---------------------------------------------------------------------------
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -235,15 +243,41 @@ const chatMCP = async (query) => {
       `MCP tool "${TOOL_NAME}"`
     );
 
-    // A tool result is a content *array*, not a string. [0].text is the text
-    // block; a tool could equally return an image or a resource link.
-    let searchResults = "";
-    if (toolResult?.content && toolResult.content.length > 0) {
-      searchResults = toolResult.content[0].text;
+    // A tool result is a content *array*, not a string -- a tool could equally
+    // return an image or a resource link. Take every text block there is, so a
+    // tool that answers in two blocks still reads as one answer, and an empty
+    // array (nothing found) naturally becomes "".
+    const searchResults = (toolResult?.content ?? [])
+      .filter((block) => block?.type === "text")
+      .map((block) => block.text)
+      .join("\n")
+      .trim();
+
+    // --- [DELTA 4] Stop before the model is even constructed ----------------
+    // Both branches below return the sentence the user should actually read, and
+    // neither touches the network. Summarizing nothing costs a full call and
+    // produces a sentence about the absence of data; summarizing a *failure*
+    // costs the same call and then dresses the failure up as a search result.
+    // The guards sit above `new ChatOpenAI` so that "this path spends nothing"
+    // is visible in the shape of the function, not just in its behaviour.
+
+    // The tool marks its own failures with isError, so a missing key or a
+    // SerpApi error arrives as a flag instead of as prose we would have to
+    // pattern-match. Passed through verbatim: the tool's message is more precise
+    // than any paraphrase of it.
+    if (toolResult?.isError) {
+      return { text: searchResults || "The web search tool failed." };
+    }
+
+    // Nothing found. Say it in the caller's terms -- we still have the query,
+    // the tool never needed it.
+    if (!searchResults) {
+      return { text: `No web results found for "${query}".` };
     }
 
     // [DELTA 3] Same model id resolution as chat.js -- one env var for the
-    // whole project.
+    // whole project. Built here, after the guards, because this is the only
+    // branch that needs it.
     const model = new ChatOpenAI({
       model: process.env.OPENAI_MODEL ?? "gpt-6-astra",
       ...(apiKey && { apiKey }),
@@ -257,11 +291,7 @@ Search Results:
 Helpful Answer:`;
 
     const prompt = PromptTemplate.fromTemplate(answerTemplate);
-    const formattedPrompt = await prompt.format({
-      // Empty content (a tool that returned nothing) would make the template
-      // read like a blank search; say so explicitly instead.
-      searchResults: searchResults || "No search results available",
-    });
+    const formattedPrompt = await prompt.format({ searchResults });
 
     const response = await model.invoke(formattedPrompt);
 
