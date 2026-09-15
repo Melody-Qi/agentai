@@ -7,6 +7,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { buildIndex, answerQuestion } from "./chat.js";
 import chatMCP, { closeMcpConnection } from "./chat-mcp.js";
+import runAgent from "./chat-agent.js";
 import {
   newDocId,
   saveDocument,
@@ -211,6 +212,49 @@ app.get("/chat-mcp", async (req, res) => {
     res.send({ mcpAnswer: text });
   } catch (error) {
     res.status(500).json({ error: `web search failed: ${error.message}` });
+  }
+});
+
+/* ---------------------------------------------------------------------------
+ * 3b. The agent -- Lesson 50's shape, reachable now for comparison
+ *
+ * Same question, same document, same two sources as /chat, with one difference:
+ * neither call happens until the model asks for it. /chat spends one embedding
+ * and one SerpApi search on every question; this route spends them only when the
+ * model decides they are worth spending.
+ *
+ * Kept as a separate route rather than a flag on /chat so Lesson 49's contract
+ * (two answers, both always present, rendered in the two UI blocks) stays exactly
+ * as it was. The trade is visible by running the same question against both.
+ *
+ * The trace is returned because it, not the answer, is what you would debug:
+ * `searched: false` on a question that obviously needed the web is the failure
+ * mode this design introduces, and it looks like a perfectly good answer.
+ * ------------------------------------------------------------------------- */
+app.get("/chat-agent", async (req, res) => {
+  const { docId, question } = req.query;
+  if (!question) {
+    return res.status(400).json({ error: "question is required" });
+  }
+
+  // docId is optional here -- an agent with no document is a web-search agent.
+  let vectorStore = null;
+  if (docId) {
+    const doc = getDocument(docId);
+    if (!doc || doc.ownerId !== req.clientId) {
+      return res.status(404).json({ error: "document not found" });
+    }
+    vectorStore = doc.vectorStore;
+  }
+
+  try {
+    const { text, ...meta } = await runAgent(question, { vectorStore });
+    // `agentAnswer` mirrors the `ragAnswer` / `mcpAnswer` naming of /chat, so a
+    // client can switch routes without changing how it reads the response. The
+    // rest of the object is the trace -- see the comment above for why it ships.
+    res.send({ agentAnswer: text, ...meta });
+  } catch (error) {
+    res.status(500).json({ error: `agent failed: ${error.message}` });
   }
 });
 

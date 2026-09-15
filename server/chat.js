@@ -108,3 +108,18 @@ const chat = async (filePath, query) => {
 };
 
 export default chat;
+
+/**
+ * Step 4 on its own, for callers that want the passages rather than a written
+ * answer.
+ *
+ * answerQuestion() runs steps 4 and 5 together, which is right for the Lesson 47
+ * UI -- one question typed by a human, one answer read by a human. It is wrong as
+ * an agent tool, because the agent's caller is a model: hand it answerQuestion()
+ * and every document lookup costs two model calls, the second one summarizing
+ * the first. A tool should return evidence and let the caller phrase it.
+ */
+export const retrieveChunks = async (vectorStore, query, k = 4) => {
+  const docs = await vectorStore.similaritySearch(query, k);
+  return docs.map((doc) => doc.pageContent).join("\n\n---\n\n");
+};

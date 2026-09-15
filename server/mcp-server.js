@@ -118,11 +118,20 @@ const server = new McpServer(SERVER_INFO);
 //    description written for a model rather than for a human, and a zod schema
 //    that is converted to JSON Schema on the wire. `num` being optional is why
 //    the description has to state the default -- the schema cannot say "10".
+//
+//    The description is not documentation, it is the router. When an agent has
+//    several tools, this paragraph is the only thing it has to choose between
+//    them -- there is no code anywhere that says "search the web for news
+//    questions". A description that states what the tool *is* ("searches the web")
+//    leaves the when entirely to the model's priors; one that states when to
+//    reach for it and when not to is the difference between a search budget
+//    spent on purpose and one spent on habit. Hence the explicit "do not use" --
+//    negative examples are what stop a model from searching for arithmetic.
 server.registerTool(
   TOOL_NAME,
   {
     description:
-      "Search the web using SerpAPI. Returns search results including organic results, snippets, and related information.",
+      "Search the public web for information the user's own documents cannot contain: news, current events, prices, releases, \"latest\"/\"today\" questions, or any fact you are not confident about. Do not use it for arithmetic, definitions, or anything you already know, and do not use it for the contents of an uploaded document.",
     inputSchema: {
       query: z.string().describe("The search query to execute"),
       num: z.number().optional().describe("Number of results to return (default: 10)"),

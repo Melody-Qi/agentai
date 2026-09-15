@@ -314,3 +314,69 @@ Helpful Answer:`;
 };
 
 export default chatMCP;
+
+/* ---------------------------------------------------------------------------
+ * Tool access, for the agent in chat-agent.js.
+ *
+ * chatMCP decides *for* the model: it always searches, then asks the model to
+ * read what came back. Letting the model decide needs two things this file was
+ * not exposing -- the list of tools, so the model can be told what exists, and a
+ * way to call one by name with arguments the model chose.
+ *
+ * Both are thin on purpose. The connection stays owned here: still exactly one
+ * child process, still one place that knows how to talk to it. chat-agent.js
+ * holds only policy -- what to ask and when to stop -- and never touches the
+ * transport.
+ *
+ * Note what is NOT here: any hand-written description of the search tool. The
+ * schema comes off the wire from mcp-server.js. That is the part of MCP worth
+ * paying for -- the tool's manual lives with the tool, so a second host (a
+ * different app, a different model) gets the same accurate description for free
+ * instead of a copy that drifts.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Every tool the MCP server advertises, converted to the shape an OpenAI
+ * function tool needs. MCP hands back JSON Schema, so this is a rename, not a
+ * translation: `inputSchema` -> `parameters`.
+ */
+export const listAgentTools = async () => {
+  await ensureConnected();
+  const { tools } = await withTimeout(
+    client.listTools(),
+    CALL_TIMEOUT_MS,
+    "MCP tools/list"
+  );
+
+  return tools.map((tool) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters: tool.inputSchema ?? { type: "object", properties: {} },
+    },
+  }));
+};
+
+/**
+ * Call one tool by name. Returns the two facts a caller can act on -- did it
+ * fail, and what does it say -- instead of a raw MCP result the caller would
+ * have to know how to unpack.
+ */
+export const callMcpTool = async (name, args = {}) => {
+  await ensureConnected();
+  const result = await withTimeout(
+    client.callTool({ name, arguments: args }),
+    CALL_TIMEOUT_MS,
+    `MCP tool "${name}"`
+  );
+
+  return {
+    isError: Boolean(result?.isError),
+    text: (result?.content ?? [])
+      .filter((block) => block?.type === "text")
+      .map((block) => block.text)
+      .join("\n")
+      .trim(),
+  };
+};
