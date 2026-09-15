@@ -215,7 +215,7 @@ export const runAgent = async (question, { vectorStore = null, maxRounds = MAX_R
     useResponsesApi: true,
   });
 
-  const messages = [new SystemMessage(SYSTEM_PROMPT), new HumanMessage(question)];
+  const messages = [new SystemMessage(systemPrompt), new HumanMessage(question)];
   const trace = [];
   const quota = { used: 0 };
 
