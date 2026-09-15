@@ -1,6 +1,10 @@
 .app-shell { min-height: 100vh; background: #fff; }
-.app-header { display: flex; align-items: center; justify-content: center; }
+/* position:relative + the absolutely placed .daily-bell keep the title centred
+   exactly as before; the bell hangs off to the right without joining the flow
+   (lesson 49's only frontend change, so the header keeps its old geometry). */
+.app-header { position: relative; display: flex; align-items: center; justify-content: center; }
 .app-header h2 { margin: 0; color: #fff; }
+.daily-bell { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
 .app-content { width: min(1000px, 90%); margin: 0 auto; padding: 48px 0 110px; }
 .upload-section { margin-bottom: 28px; text-align: center; }
 .upload-section .ant-tag { margin-top: 14px; }
@@ -23,10 +27,36 @@
 .chat-controls { display: flex; justify-content: center; align-items: center; }
 .chat-controls .ant-input-group-wrapper { flex: 1; }
 .chat-hint { margin: 8px 0 0; font-size: 12px; text-align: center; color: #d4380d; }
+/* ---- Lesson 49 / HW5: the daily-message drawer ---- */
+.daily-hint { display: block; margin-bottom: 16px; font-size: 12px; line-height: 1.6; }
+.daily-alert { margin-bottom: 16px; }
+.daily-heading { margin: 0 0 8px; }
+.message-inbox .ant-empty { margin: 24px 0; }
+/* Drawer items are full-width cards rather than list rows: the message IS the
+   content, and an unread one is the only thing on screen that is louder. */
+.inbox-item { display: block; padding: 14px 12px !important; border-radius: 8px; border: 1px solid #f0f0f0; margin-bottom: 10px; }
+.inbox-item-unread { border-left: 4px solid #1890ff; background: #f7fbff; }
+.inbox-body { width: 100%; }
+.inbox-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.inbox-text { margin-bottom: 8px !important; color: #111; white-space: pre-wrap; }
+.inbox-meta { display: flex; flex-wrap: wrap; gap: 4px; }
+.inbox-meta .ant-tag { margin-inline-end: 0; }
+.sub-item { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; }
+.sub-body { flex: 1; min-width: 0; }
+.sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.sub-head .ant-tag { margin-inline-end: 0; }
+.sub-line { display: block; font-size: 12px; }
+.sub-actions { display: flex; align-items: center; gap: 6px; }
+.daily-form-row { display: flex; gap: 12px; }
+.daily-form-time { flex: 0 0 160px; }
+.daily-form-zone { flex: 1; }
+.daily-form-error { display: block; margin-bottom: 12px; }
 @media (max-width: 600px) {
   .app-content { width: 92%; padding-top: 24px; }
   .user-bubble, .rag-answer, .mcp-answer { max-width: 88%; }
   .chat-component { left: 4%; width: 92%; }
   .chat-controls { flex-wrap: wrap; gap: 8px; }
   .chat-controls .ant-btn { margin-left: 0 !important; }
+  .daily-form-row { flex-wrap: wrap; }
+  .sub-item { flex-wrap: wrap; }
 }
