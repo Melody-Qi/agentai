@@ -189,9 +189,10 @@ const runTool = async (call, { vectorStore, quota }) => {
  *
  * Returns the answer plus the trace of what it decided -- which is the part
  * worth logging. In a tool-calling agent the interesting output is not the
- * answer, it is the sequence of choices that produced it.
+ * answer, it is the sequence of choices that produced it. systemPrompt is an
+ * override for daily.js, which calls this with no user question at all.
  */
-export const runAgent = async (question, { vectorStore = null, maxRounds = MAX_ROUNDS } = {}) => {
+export const runAgent = async (question, { vectorStore = null, maxRounds = MAX_ROUNDS, systemPrompt = SYSTEM_PROMPT } = {}) => {
   // Connects on first use and publishes its tool list -- so the tools really are
   // described by the server, not by this file.
   const mcpTools = await listAgentTools();

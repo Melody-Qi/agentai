@@ -8,6 +8,10 @@ import crypto from "node:crypto";
 import { buildIndex, answerQuestion } from "./chat.js";
 import chatMCP, { closeMcpConnection } from "./chat-mcp.js";
 import runAgent from "./chat-agent.js";
+// Imported as a namespace because almost the whole module is in play here: the
+// tick, the subscription registry, the inbox. One line at the top of this file
+// instead of sixteen, and `daily.tick()` says where it came from.
+import * as daily from "./daily.js";
 import {
   newDocId,
   saveDocument,
@@ -21,6 +25,27 @@ dotenv.config(); // load .env into process.env before anything reads it
 
 const app = express();
 app.use(cors()); // allow the React dev server (5173/3000) to call port 5001
+app.use(express.json()); // /daily takes a JSON body; every other route uses query
+
+/* ---------------------------------------------------------------------------
+ * 0. The scheduler's door, mounted above the identity wall
+ *
+ * Everything below this line assumes the caller is a browser holding a
+ * localStorage client id. A cron job is not that: it has no browser, and it
+ * cannot be given one, because x-client-id is a partition key rather than a
+ * credential -- any caller can type any value.
+ *
+ * So the scheduler gets its own door with its own secret, and the door is placed
+ * *before* the middleware that checks client ids. Order is the access control
+ * here: Express matches in registration order, this route answers, and the
+ * request never reaches the identity check below. Moving this line under the
+ * `app.use` that follows is the one edit that breaks everything above.
+ *
+ * The secret is DAILY_TICK_TOKEN. Unset, the route is loopback-only, so an
+ * unconfigured deployment is not an open one -- the same "degrade to something
+ * safe rather than fail open" rule as a missing SERPAPI_KEY.
+ * ------------------------------------------------------------------------- */
+app.post("/daily/tick", handleDailyTick);
 
 const PORT = 5001;
 const UPLOAD_ROOT = "uploads";
@@ -258,6 +283,129 @@ app.get("/chat-agent", async (req, res) => {
   }
 });
 
+/* ---------------------------------------------------------------------------
+ * 3c. The daily assistant -- the same agent, asked by a clock instead of a user
+ *
+ * /chat-agent answers a question somebody typed. These routes schedule that same
+ * agent to answer a question nobody typed: the subscription supplies the topic,
+ * the module supplies the clock, and the message lands in an inbox instead of in
+ * a response body.
+ *
+ * Three of these are ordinary CRUD with the same ownership rule as documents
+ * (404, never 403). The fourth -- POST /daily/:id/run -- is the one that matters
+ * most in practice: without it, "does this work?" means waiting until tomorrow
+ * morning, and a feature you cannot run on demand is a feature you cannot debug.
+ * ------------------------------------------------------------------------- */
+
+// POST /daily  { topic, hour, minute, timezone?, docId? }  -> 201 { subscription }
+app.post("/daily", (req, res) => {
+  const { topic, hour, minute, timezone, docId } = req.body ?? {};
+
+  if (typeof topic !== "string" || topic.trim().length === 0 || topic.length > 200) {
+    return res
+      .status(400)
+      .json({ error: "topic must be a string of 1-200 characters" });
+  }
+
+  // Number() first so "8" from a form field is accepted and 8.5 is not.
+  const h = Number(hour);
+  const m = Number(minute);
+  if (!daily.isValidTime(h, m)) {
+    return res.status(400).json({ error: "hour must be 0-23 and minute 0-59" });
+  }
+
+  const zone = timezone ?? daily.DEFAULT_TIMEZONE;
+  if (!daily.isValidTimezone(zone)) {
+    return res.status(400).json({ error: `unknown timezone: ${zone}` });
+  }
+
+  // A daily message costs a model call and possibly a search, every day, forever.
+  // Unbounded subscriptions are an unbounded bill, so the cap is here rather than
+  // in a prompt.
+  if (daily.listSubscriptions(req.clientId).length >= daily.MAX_SUBSCRIPTIONS_PER_CLIENT) {
+    return res.status(409).json({
+      error: `at most ${daily.MAX_SUBSCRIPTIONS_PER_CLIENT} daily messages per client`,
+    });
+  }
+
+  // Checked here for a 404 that matches every other route, and again inside
+  // daily.js at generation time: this runs with the request's identity, that one
+  // runs with nobody watching.
+  if (docId) {
+    const doc = getDocument(docId);
+    if (!doc || doc.ownerId !== req.clientId) {
+      return res.status(404).json({ error: "document not found" });
+    }
+  }
+
+  const sub = daily.createSubscription({
+    clientId: req.clientId,
+    topic: topic.trim(),
+    hour: h,
+    minute: m,
+    timezone: zone,
+    docId: docId ?? null,
+  });
+
+  res.status(201).json({ subscription: daily.toPublicSubscription(sub) });
+});
+
+// GET /daily -> the caller's subscriptions, each with its next speaking time
+app.get("/daily", (req, res) => {
+  res.json({
+    subscriptions: daily
+      .listSubscriptions(req.clientId)
+      .map((sub) => daily.toPublicSubscription(sub)),
+  });
+});
+
+// DELETE /daily/:id  -> 204, only if you own it. Messages already sent stay:
+// the inbox is a record of what the user was told, not a view over the schedule.
+app.delete("/daily/:id", (req, res) => {
+  if (!daily.deleteSubscription(req.params.id, req.clientId)) {
+    return res.status(404).json({ error: "subscription not found" });
+  }
+  res.status(204).end();
+});
+
+// POST /daily/:id/run -> generate now, whatever the clock says
+app.post("/daily/:id/run", async (req, res) => {
+  const sub = daily.getSubscription(req.params.id, req.clientId);
+  if (!sub) {
+    return res.status(404).json({ error: "subscription not found" });
+  }
+
+  try {
+    // Same code path as the timer: this consumes today, so running it by hand at
+    // 07:00 means the 08:00 message has already been sent. That is the honest
+    // behaviour -- "one message per day" is the invariant, and a manual run is
+    // how you receive it early or retry it after a failure.
+    const message = await daily.deliver(sub);
+    res.status(201).json({ message: daily.toPublicMessage(message) });
+  } catch (error) {
+    // 502: the schedule is fine, the thing that writes the message is not.
+    res.status(502).json({
+      error: `could not generate the message: ${error.message}`,
+      subscription: daily.toPublicSubscription(sub),
+    });
+  }
+});
+
+// GET /messages?limit=20 -> the inbox, newest first
+app.get("/messages", (req, res) => {
+  const limit = Number(req.query.limit ?? 20);
+  const messages = daily.listMessages(req.clientId, { limit });
+  res.json({ messages: messages.map(daily.toPublicMessage) });
+});
+
+// POST /messages/:id/read -> 204
+app.post("/messages/:id/read", (req, res) => {
+  if (!daily.markMessageRead(req.params.id, req.clientId)) {
+    return res.status(404).json({ error: "message not found" });
+  }
+  res.status(204).end();
+});
+
 // GET /documents -> only the caller's own documents
 app.get("/documents", (req, res) => {
   res.json({ documents: listDocuments(req.clientId).map(toPublic) });
@@ -275,7 +423,38 @@ app.delete("/documents/:docId", (req, res) => {
 });
 
 /* ---------------------------------------------------------------------------
- * 4. Shutdown
+ * 4. The tick endpoint's handler
+ *
+ * A function declaration on purpose: the route near the top of this file refers
+ * to it, and declarations hoist where a const arrow would still be in its
+ * temporal dead zone. Same reason the body lives down here -- the route's
+ * *position* is load-bearing (section 0), its body is not.
+ * ------------------------------------------------------------------------- */
+async function handleDailyTick(req, res) {
+  const token = process.env.DAILY_TICK_TOKEN;
+  const fromThisMachine = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
+    req.socket.remoteAddress ?? ""
+  );
+
+  if (token ? req.get("x-tick-token") !== token : !fromThisMachine) {
+    return token
+      ? res.status(401).json({ error: "invalid x-tick-token" })
+      : res.status(503).json({
+          error: "DAILY_TICK_TOKEN is not set; /daily/tick is loopback-only",
+        });
+  }
+
+  try {
+    // Idempotent, which is what makes it safe to call this from three places at
+    // once -- the timer below, an external scheduler, and a human with curl.
+    res.json(await daily.tick());
+  } catch (error) {
+    res.status(500).json({ error: `tick failed: ${error.message}` });
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. Shutdown
  *
  * chat-mcp.js spawns a child process (`node mcp-server.js`). Strictly speaking
  * that child cleans itself up: when this process exits, the pipe to its stdin
@@ -283,9 +462,14 @@ app.delete("/documents/:docId", (req, res) => {
  * process.exit() with no close() leaves zero extra node processes). What this
  * handler adds is order -- tell the client to close, wait for it, then exit,
  * instead of tearing the parent down while a tool call is in flight.
+ *
+ * The scheduler is stopped first for the same reason: it is the one thing in the
+ * process that can be mid-write to a file, and being killed there is the only way
+ * to lose a claim.
  * ------------------------------------------------------------------------- */
 const shutdown = async (signal) => {
   console.log(`\n${signal} received, closing the MCP connection...`);
+  daily.stopScheduler();
   await closeMcpConnection();
   process.exit(0);
 };
@@ -300,4 +484,19 @@ app.listen(PORT, () => {
       ? "MCP web search: enabled (search_web via serpapi-search)"
       : "MCP web search: DISABLED (set SERPAPI_KEY in server/.env to enable)"
   );
+
+  // The daily assistant. An in-process timer is the right default for a course
+  // project and the wrong one for a host that scales to zero -- daily.js explains
+  // why, and DAILY_SCHEDULER=off is the switch to flip when the scheduler moves
+  // outside this process and starts calling POST /daily/tick instead.
+  if (process.env.DAILY_SCHEDULER === "off") {
+    console.log("Daily scheduler: off (DAILY_SCHEDULER=off)");
+  } else {
+    daily.startScheduler();
+    console.log(
+      `Daily scheduler: every ${process.env.DAILY_TICK_MS ?? 60000}ms, ` +
+        `default timezone ${daily.DEFAULT_TIMEZONE} ` +
+        `(DAILY_TICK_TOKEN ${process.env.DAILY_TICK_TOKEN ? "set" : "NOT set -- /daily/tick is loopback-only"})`
+    );
+  }
 });
