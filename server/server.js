@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { buildIndex, answerQuestion } from "./chat.js";
+import chatMCP, { closeMcpConnection } from "./chat-mcp.js";
 import {
   newDocId,
   saveDocument,
@@ -113,7 +114,53 @@ app.post("/upload", assignDocId, upload.single("file"), async (req, res) => {
   });
 });
 
-// GET /chat?docId=...&question=...  (header x-client-id)
+/* ---------------------------------------------------------------------------
+ * 3. Web search -- Lesson 49's MCP half
+ *
+ * The slides put both calls in one handler and return both answers:
+ *
+ *     const ragResp = await chat(filePath, req.query.question);
+ *     const mcpResp = await chatMCP(req.query.question);
+ *     res.send({ ragAnswer: ragResp.text, mcpAnswer: mcpResp.text });
+ *
+ * Ours is the same two answers, with three adaptations forced by Lessons 46-48:
+ *
+ *   a. The RAG call here is answerQuestion(doc.vectorStore, q), not
+ *      chat(filePath, q). Lesson 46 split the pipeline so the index is built on
+ *      upload; calling chat() would re-embed the PDF on every question.
+ *   b. The document lookup and the ownership check stay in front of it, so this
+ *      route is still scoped to the caller's own uploads.
+ *   c. The web search is opt-out-able and never fatal. One call costs one unit
+ *      of the SerpApi quota (free plan: 250 searches/month, i.e. ~8/day), so a
+ *      question that does not need the web should not silently spend one, and a
+ *      search that fails must not take the RAG answer down with it.
+ *
+ * Read at module scope, after dotenv.config() above -- an ordering that matters.
+ * ------------------------------------------------------------------------- */
+const WEB_SEARCH_ENABLED = Boolean(process.env.SERPAPI_KEY);
+
+const runWebSearch = async (question, searchParam) => {
+  // Opt-out via ?search=0. The front end does not send it yet; it exists so the
+  // quota is a choice rather than a side effect.
+  if (searchParam === "0" || searchParam === "false") {
+    return "Web search skipped (?search=0).";
+  }
+
+  if (!WEB_SEARCH_ENABLED) {
+    return "Web search unavailable: SERPAPI_KEY is not set in server/.env. See server/.env.example.";
+  }
+
+  try {
+    const { text } = await chatMCP(question);
+    return text;
+  } catch (error) {
+    // Degrade, do not fail: half an answer is worth more than a 500.
+    console.error("MCP web search failed:", error.message);
+    return `Web search failed: ${error.message}`;
+  }
+};
+
+// GET /chat?docId=...&question=...&search=0  (header x-client-id)
 app.get("/chat", async (req, res) => {
   const { docId, question } = req.query;
   if (!docId || !question) {
@@ -131,10 +178,40 @@ app.get("/chat", async (req, res) => {
   // Steps 4-5 over the cached store: only the question gets embedded.
   const text = await answerQuestion(doc.vectorStore, question);
 
+  // Then the same question, answered from the open web by a tool in another
+  // process. Sequential, not Promise.all: the two calls share one OpenAI rate
+  // limit and the answers are read one after the other in the UI, so running
+  // them in parallel would only make a 429 harder to attribute.
+  const mcpAnswer = await runWebSearch(question, req.query.search);
+
   res.send({
     ragAnswer: text,
-    mcpAnswer: "N/A", // placeholder, wired up in the next lesson
+    mcpAnswer,
   });
+});
+
+// GET /chat-mcp?question=...  (header x-client-id)
+// Lesson 49's MCP path without a document attached: the same call /chat makes,
+// reachable on its own. Useful in Postman, and it is the endpoint a future
+// "search-only" UI would use. 503 on a missing key, because that is a server
+// configuration problem, not an answer.
+app.get("/chat-mcp", async (req, res) => {
+  const { question } = req.query;
+  if (!question) {
+    return res.status(400).json({ error: "question is required" });
+  }
+  if (!WEB_SEARCH_ENABLED) {
+    return res.status(503).json({
+      error: "web search disabled: SERPAPI_KEY is not set in server/.env",
+    });
+  }
+
+  try {
+    const { text } = await chatMCP(question);
+    res.send({ mcpAnswer: text });
+  } catch (error) {
+    res.status(500).json({ error: `web search failed: ${error.message}` });
+  }
 });
 
 // GET /documents -> only the caller's own documents
@@ -153,6 +230,30 @@ app.delete("/documents/:docId", (req, res) => {
   res.status(204).end();
 });
 
+/* ---------------------------------------------------------------------------
+ * 4. Shutdown
+ *
+ * chat-mcp.js spawns a child process (`node mcp-server.js`). Strictly speaking
+ * that child cleans itself up: when this process exits, the pipe to its stdin
+ * closes, the stdio transport ends, and it goes away too (measured: a hard
+ * process.exit() with no close() leaves zero extra node processes). What this
+ * handler adds is order -- tell the client to close, wait for it, then exit,
+ * instead of tearing the parent down while a tool call is in flight.
+ * ------------------------------------------------------------------------- */
+const shutdown = async (signal) => {
+  console.log(`\n${signal} received, closing the MCP connection...`);
+  await closeMcpConnection();
+  process.exit(0);
+};
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  console.log(
+    WEB_SEARCH_ENABLED
+      ? "MCP web search: enabled (search_web via serpapi-search)"
+      : "MCP web search: DISABLED (set SERPAPI_KEY in server/.env to enable)"
+  );
 });
