@@ -13,7 +13,9 @@ import axios from "axios";
  * and the pure helpers below stay testable without a DOM.
  * ------------------------------------------------------------------------- */
 
-const DOMAIN = "http://localhost:5001";
+// Deployment: set REACT_APP_API_DOMAIN to the App Runner URL at build time.
+// Defaults to the local Express server so local dev is unchanged.
+const DOMAIN = process.env.REACT_APP_API_DOMAIN || "http://localhost:5001";
 
 /**
  * There is no push channel: the backend cannot reach a browser tab, and that

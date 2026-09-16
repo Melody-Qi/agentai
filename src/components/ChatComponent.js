@@ -6,7 +6,9 @@ import SpeechRecognition, { useSpeechRecognition } from "react-speech-recognitio
 import Speech from "speak-tts";
 
 const { Search } = Input;
-const DOMAIN = "http://localhost:5001";
+// Deployment: set REACT_APP_API_DOMAIN to the App Runner URL at build time.
+// Defaults to the local Express server so local dev is unchanged.
+const DOMAIN = process.env.REACT_APP_API_DOMAIN || "http://localhost:5001";
 
 // speak-tts options, as in the lecture. `voice` is deliberately NOT part of this
 // base object -- see initSpeech() below for why it gets special treatment.

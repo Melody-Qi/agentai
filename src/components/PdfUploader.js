@@ -4,7 +4,9 @@ import { InboxOutlined } from "@ant-design/icons";
 import { message, Upload } from "antd";
 
 const { Dragger } = Upload;
-const DOMAIN = "http://localhost:5001";
+// Deployment: set REACT_APP_API_DOMAIN to the App Runner URL at build time.
+// Defaults to the local Express server so local dev is unchanged.
+const DOMAIN = process.env.REACT_APP_API_DOMAIN || "http://localhost:5001";
 
 const PdfUploader = ({ clientId, onUploadSuccess }) => {
   const uploadToBackend = async (file) => {
