@@ -85,6 +85,7 @@ const PROVIDERS = [
     baseUrl: () => process.env.OPENAI_BASE_URL ?? null,
     model: () => process.env.OPENAI_MODEL ?? "gpt-6-astra",
     embedModel: () => process.env.OPENAI_EMBED_MODEL ?? "text-embedding-3-small",
+    embedBatch: () => Number(process.env.OPENAI_EMBED_BATCH ?? 512),
     tools: true,
     // gpt-6-astra rejects function tools on /v1/chat/completions ("Function
     // tools with reasoning_effort are not supported... use /v1/responses"), so
@@ -101,6 +102,11 @@ const PROVIDERS = [
     baseUrl: () => process.env.ZHIPU_BASE_URL ?? "https://open.bigmodel.cn/api/paas/v4",
     model: () => process.env.ZHIPU_MODEL ?? "glm-4.7-flash",
     embedModel: () => process.env.ZHIPU_EMBED_MODEL ?? "embedding-3",
+    // Verified against the live API: sending 100 inputs returns 400 with
+    // business code 1214, "input数组最大不得超过64条". LangChain would happily
+    // send 512, so this is not a tuning knob, it is the difference between a
+    // 30-page PDF indexing and the upload returning 502.
+    embedBatch: () => Number(process.env.ZHIPU_EMBED_BATCH ?? 64),
     tools: true,
     responsesForTools: false,
     cost: "free",
@@ -113,6 +119,9 @@ const PROVIDERS = [
     baseUrl: () => process.env.SILICONFLOW_BASE_URL ?? "https://api.siliconflow.cn/v1",
     model: () => process.env.SILICONFLOW_MODEL ?? "Qwen/Qwen3-8B",
     embedModel: () => process.env.SILICONFLOW_EMBED_MODEL ?? "BAAI/bge-m3",
+    // Conservative: their per-request array cap is not published. 64 is under
+    // every limit we have actually seen, and one PDF is only a few requests.
+    embedBatch: () => Number(process.env.SILICONFLOW_EMBED_BATCH ?? 64),
     tools: true,
     responsesForTools: false,
     cost: "free",
@@ -125,6 +134,8 @@ const PROVIDERS = [
     baseUrl: () => process.env.DASHSCOPE_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
     model: () => process.env.DASHSCOPE_MODEL ?? "qwen-turbo",
     embedModel: () => process.env.DASHSCOPE_EMBED_MODEL ?? "text-embedding-v3",
+    // Same reasoning as SiliconFlow: not published, so stay conservative.
+    embedBatch: () => Number(process.env.DASHSCOPE_EMBED_BATCH ?? 64),
     tools: true,
     responsesForTools: false,
     // Per-model 1M-token free grant, 90 days, north-China region only.
@@ -140,6 +151,7 @@ const PROVIDERS = [
     baseUrl: () => process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434/v1",
     model: () => process.env.OLLAMA_MODEL ?? "qwen2.5:7b",
     embedModel: () => process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text",
+    embedBatch: () => Number(process.env.OLLAMA_EMBED_BATCH ?? 64),
     // Depends on which model was pulled, so it is not promised.
     tools: false,
     responsesForTools: false,
@@ -641,6 +653,12 @@ const buildEmbeddings = (provider) =>
   new OpenAIEmbeddings({
     model: provider.embedModel(),
     apiKey: apiKeyOf(provider),
+    // LangChain's default batch is 512 strings per request. That is fine for
+    // OpenAI and over the limit for everyone else here -- Zhipu answers 400
+    // (code 1214) past 64. The failure is classified as a malformed request,
+    // which the fallback chain deliberately does NOT walk past, so without this
+    // a large PDF fails the upload outright instead of degrading.
+    batchSize: provider.embedBatch ? provider.embedBatch() : 64,
     ...(baseUrlOf(provider) ? { configuration: { baseURL: baseUrlOf(provider) } } : {}),
   });
 
