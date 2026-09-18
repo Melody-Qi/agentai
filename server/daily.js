@@ -149,9 +149,9 @@ const load = () => {
 
 const save = () => {
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  const tmp = `${DATA_FILE}.${process.pid}.tmp`;
+  const tmp = `${DATA_FILE}.${process.pid}.${Date.now()}.tmp`; // unique per call: two saves in the same millisecond must not share a temp file
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, DATA_FILE);
+  renameWithRetry(tmp, DATA_FILE); // Windows: AV scanners and editors briefly lock files, rename then fails with EPERM -- retry instead of losing the message
 };
 
 load();
@@ -703,3 +703,28 @@ export const toPublicMessage = ({
   trace: meta?.trace ?? [],
   docMissing: meta?.docMissing ?? false,
 });
+
+/**
+ * Rename with a short retry loop (Windows only, in practice).
+ *
+ * On Windows a rename fails with EPERM while another handle briefly holds
+ * either file -- antivirus real-time scanning the freshly written temp file is
+ * the classic trigger. The lock clears in milliseconds, so a few short waits
+ * turn a lost daily message into an ordinary slow write. Atomics.wait is the
+ * only synchronous sleep Node offers; blocking the event loop here is fine
+ * because save() is already synchronous.
+ * -------------------------------------------------------------------------- */
+const renameWithRetry = (tmp, target, attempts = 5) => {
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(tmp, target);
+      return;
+    } catch (error) {
+      if (error.code !== "EPERM" || i === attempts - 1) {
+        try { fs.unlinkSync(tmp); } catch { /* best effort: drop the orphan temp file */ }
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (i + 1));
+    }
+  }
+};
