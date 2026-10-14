@@ -10,7 +10,8 @@
 .upload-section .ant-tag { margin-top: 14px; }
 .upload-section .ant-upload-list { width: fit-content; margin: 0 auto; text-align: left; }
 .qa-list { min-height: 280px; display: flex; flex-direction: column; gap: 18px; align-items: stretch; }
-.qa-list > .ant-empty, .qa-list > .ant-spin { align-self: center; }
+.qa-list > .ant-spin { align-self: center; }
+.qa-empty { align-self: center; margin: auto 0; padding: 40px 0; color: #999; font-size: 13px; }
 .qa-item { width: 100%; }
 .user-container { text-align: right; }
 .user-bubble { max-width: 50%; display: inline-block; padding: 10px; border-radius: 10px; color: #fff; background: #1890ff; text-align: left; }
@@ -62,7 +63,7 @@
 .daily-form-zone { flex: 1; }
 .daily-form-error { display: block; margin-bottom: 12px; }
 .document-library { margin-top: 16px; text-align: left; }
-.library-empty { color: #888; }
+.library-empty { margin: 14px 0 4px; color: #999; font-size: 13px; text-align: center; }
 .library-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .library-count { color: #888; font-size: 12px; }
 .library-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
@@ -75,6 +76,10 @@
 .answer-sources { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .sources-label { font-size: 12px; color: #888; }
 .answer-sources .ant-tag { margin-inline-end: 0; }
+/* Stands in for an answer that has not arrived yet, so a question is readable
+   the moment it is asked instead of after the slower half finishes. The padding
+   matches the real bubble's so the row does not jump when the text replaces it. */
+.answer-pending { display: flex; align-items: center; gap: 8px; padding: 10px 0; color: #999; font-size: 13px; }
 @media (max-width: 600px) {
   .app-content { width: 92%; padding-top: 24px; }
   .user-bubble, .rag-answer, .mcp-answer { max-width: 88%; }

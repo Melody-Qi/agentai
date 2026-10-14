@@ -214,6 +214,49 @@ const withDeadline = (promise, ms, label) => {
   ]).finally(() => clearTimeout(timer));
 };
 
+/* Which halves of one answer this request should produce.
+ *
+ * Added so the UI can put the question on screen before either answer exists and
+ * then fill the two blocks in as they arrive. /chat used to return both legs in
+ * a single response, which meant the question could not appear until the slower
+ * leg -- the web search, with its 45s ceiling -- was already finished.
+ *
+ * `?legs=rag` and `?legs=mcp` each run one half and return only that half's
+ * keys. Omitting the parameter runs both and is exactly the old behaviour, so
+ * every caller that has never heard of it (curl, /daily, the tests) is
+ * unaffected. Nothing here changes what is *computed*, only what one response
+ * carries: two half-requests do the same work as one whole one.
+ */
+const KNOWN_LEGS = ["rag", "mcp"];
+
+const parseLegs = (value) => {
+  // Undefined or empty means "both". The default has to stay the whole answer,
+  // because a caller that does not know this parameter exists would otherwise
+  // silently start receiving half of one.
+  if (value === undefined || String(value).trim() === "") {
+    return { rag: true, mcp: true };
+  }
+
+  const requested = new Set(
+    String(value)
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  const unknown = [...requested].filter((item) => !KNOWN_LEGS.includes(item));
+  if (unknown.length) {
+    throw new Error(
+      `unknown legs: ${unknown.join(", ")} (expected any of ${KNOWN_LEGS.join(", ")})`
+    );
+  }
+  if (!requested.size) {
+    throw new Error("legs must not be empty; omit it to run both");
+  }
+
+  return { rag: requested.has("rag"), mcp: requested.has("mcp") };
+};
+
 const runWebSearch = async (question, searchParam) => {
   // Opt-out via ?search=0. The front end does not send it yet; it exists so the
   // quota is a choice rather than a side effect.
@@ -243,17 +286,31 @@ const runWebSearch = async (question, searchParam) => {
   }
 };
 
-// GET /chat?docId=...&question=...&search=0  (header x-client-id)
+// GET /chat?docId=...&question=...&search=0&legs=rag,mcp  (header x-client-id)
 //
 // docId accepts a comma-separated list, so one question can span several
 // documents. Passing a single id is still exactly what it always was -- a list of
 // length one -- and anything longer goes through the per-document retrieval in
 // chat.js, which is the part that stops a third document being silently crowded
 // out by the two that scored highest.
+//
+// legs is optional and defaults to both halves. `legs=rag` returns
+// { ragAnswer, sources } and `legs=mcp` returns { mcpAnswer, sources }, which is
+// how the UI shows the question first and each answer the moment it exists --
+// see parseLegs below.
 app.get("/chat", async (req, res) => {
   const { docId, question } = req.query;
   if (!docId || !question) {
     return res.status(400).json({ error: "docId and question are required" });
+  }
+
+  // Validated before any work, like docId above: a leg name nobody recognises
+  // should cost no embedding and no search unit.
+  let legs;
+  try {
+    legs = parseLegs(req.query.legs);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 
   const requestedIds = [
@@ -288,35 +345,45 @@ app.get("/chat", async (req, res) => {
     });
   }
 
+  // Each requested leg writes only its own key, so a client that asks for one
+  // half can tell "not asked" from "asked and empty" by whether the key is
+  // there at all -- which is exactly the distinction the UI needs to know which
+  // block is still waiting.
+  const answer = {
+    // Which files the answer was actually read from, echoed back so the UI can
+    // say so. It stops being a nicety the moment more than one document exists:
+    // "read from A and B" is a very different claim from "read from all six".
+    sources: sources.map((source) => source.originalName),
+  };
+
   // Steps 4-5 over the cached stores: only the question gets embedded.
-  let text;
-  try {
-    text = await answerQuestionFromStores(sources, question);
-  } catch (error) {
-    // 502, the same code /daily/:id/run uses for the same reason: the request was
-    // fine, the thing that writes answers is not. Un-caught, this rejection
-    // reached Express's default handler, which replies with an HTML page -- and a
-    // JSON client cannot read that, so the UI showed axios's generic
-    // "Request failed with status code 500" with the real cause nowhere.
-    return res
-      .status(502)
-      .json({ error: `could not answer from the documents: ${error.message}` });
+  if (legs.rag) {
+    try {
+      answer.ragAnswer = await answerQuestionFromStores(sources, question);
+    } catch (error) {
+      // 502, the same code /daily/:id/run uses for the same reason: the request
+      // was fine, the thing that writes answers is not. Un-caught, this
+      // rejection reached Express's default handler, which replies with an HTML
+      // page -- and a JSON client cannot read that, so the UI showed axios's
+      // generic "Request failed with status code 500" with the real cause
+      // nowhere.
+      return res
+        .status(502)
+        .json({ error: `could not answer from the documents: ${error.message}` });
+    }
   }
 
   // Then the same question, answered from the open web by a tool in another
   // process. Sequential, not Promise.all: the two calls share one OpenAI rate
   // limit and the answers are read one after the other in the UI, so running
-  // them in parallel would only make a 429 harder to attribute.
-  const mcpAnswer = await runWebSearch(question, req.query.search);
+  // them in parallel would only make a 429 harder to attribute. (Across two
+  // requests the client keeps that same order -- it waits for this leg before
+  // asking for the other one.)
+  if (legs.mcp) {
+    answer.mcpAnswer = await runWebSearch(question, req.query.search);
+  }
 
-  res.send({
-    ragAnswer: text,
-    mcpAnswer,
-    // Which files the answer was actually read from, echoed back so the UI can
-    // say so. It stops being a nicety the moment more than one document exists:
-    // "read from A and B" is a very different claim from "read from all six".
-    sources: sources.map((source) => source.originalName),
-  });
+  res.send(answer);
 });
 
 // GET /chat-mcp?question=...  (header x-client-id)

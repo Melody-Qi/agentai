@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Layout, Typography, message } from "antd";
 import { BellOutlined } from "@ant-design/icons";
 import PdfUploader from "./components/PdfUploader";
@@ -216,9 +216,36 @@ function App() {
     }
   };
 
-  const handleResp = (question, answer) => {
-    setConversation((previous) => [...previous, { question, answer }]);
-  };
+  // One question used to reach the screen together with its answer, because both
+  // went into `conversation` in the same setState -- and the answer is not ready
+  // until the slowest half (a web search, up to 45s) is done. Splitting it in two
+  // is what lets the question appear the instant it is asked.
+  //
+  // Patching by id, not by index: `conversation` is rebuilt on every update, so
+  // an index captured before an answer arrived can point at a different question
+  // by the time it lands. The counter lives in a ref because it only has to be
+  // unique inside this tab -- and being a ref, bumping it does not re-render.
+  const askCounter = useRef(0);
+
+  const startQuestion = useCallback((question) => {
+    const id = `ask-${Date.now()}-${askCounter.current++}`;
+    // answer: null is the "asked, nothing back yet" state. It is deliberately
+    // not {} -- a missing object and an empty object have to be different things
+    // downstream, because only the first one means "still working".
+    setConversation((previous) => [...previous, { id, question, answer: null }]);
+    return id;
+  }, []);
+
+  // Merged into whatever is already there, which is what lets one answer arrive
+  // in two pieces: the RAG request fills ragAnswer, the MCP request that follows
+  // fills mcpAnswer, and neither overwrites the other.
+  const updateAnswer = useCallback((id, patch) => {
+    setConversation((previous) =>
+      previous.map((item) =>
+        item.id === id ? { ...item, answer: { ...(item.answer ?? {}), ...patch } } : item
+      )
+    );
+  }, []);
 
   return (
     <Layout className="app-shell">
@@ -252,7 +279,8 @@ function App() {
       <ChatComponent
         clientId={clientId}
         docIds={selectedDocIds}
-        handleResp={handleResp}
+        onAskStart={startQuestion}
+        onAnswerPart={updateAnswer}
         isLoading={isLoading}
         setIsLoading={setIsLoading}
       />

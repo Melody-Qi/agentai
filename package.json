@@ -34,10 +34,18 @@
     ]
   },
   "jest": {
+    "transformIgnorePatterns": [
+      "[/\\\\]node_modules[/\\\\](?!(react-markdown|unified|bail|trough|is-plain-obj|zwitch|longest-streak|ccount|markdown-table|stringify-entities|trim-lines|devlop|web-namespaces|property-information|space-separated-tokens|comma-separated-tokens|html-void-elements|html-url-attributes|decode-named-character-reference|character-entities|character-entities-legacy|character-entities-html4|character-reference-invalid|vfile|vfile-message|unist-.*|micromark.*|mdast-.*|hast-.*|remark-.*|rehype-.*|estree-util-.*)/).+\\.(js|mjs|jsx|ts|tsx)$",
+      "^.+\\.module\\.(css|sass|scss)$"
+    ],
     "moduleNameMapper": {
       "^@rc-component/(pagination|picker)/(generate|locale)/(.*)$": "<rootDir>/node_modules/@rc-component/$1/lib/$2/$3",
       "^@rc-component/(pagination|picker)/(generate|locale)$": "<rootDir>/node_modules/@rc-component/$1/lib/$2",
-      "^@ant-design/colors/(?:es|esm)/(.*)$": "<rootDir>/node_modules/@ant-design/colors/lib/$1"
+      "^@ant-design/colors/(?:es|esm)/(.*)$": "<rootDir>/node_modules/@ant-design/colors/lib/$1",
+      "^unist-util-visit-parents/do-not-use-color$": "<rootDir>/node_modules/unist-util-visit-parents/lib/color.js",
+      "^#minpath$": "<rootDir>/node_modules/vfile/lib/minpath.js",
+      "^#minproc$": "<rootDir>/node_modules/vfile/lib/minproc.js",
+      "^#minurl$": "<rootDir>/node_modules/vfile/lib/minurl.js"
     }
   },
   "browserslist": {

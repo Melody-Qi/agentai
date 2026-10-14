@@ -1,6 +1,12 @@
+import axios from "axios";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { initSpeech } from "./components/ChatComponent";
 import App from "./App";
+
+// The questions below are about what is on screen between two network calls, so
+// the HTTP layer is stubbed: axios is mocked, and the tests decide when each
+// request finishes.
+jest.mock("axios");
 
 // A stand-in for speak-tts that reproduces the behaviour the real library has and
 // that the slides' code does not survive: init({ voice }) rejects when that voice
@@ -83,8 +89,10 @@ beforeEach(() => {
 test("renders the Agent AI shell", async () => {
   render(<App />);
   expect(screen.getByText("Agent AI")).toBeInTheDocument();
-  expect(screen.getByText(/click or drag a pdf file/i)).toBeInTheDocument();
-  expect(screen.getByText(/upload a pdf, then ask/i)).toBeInTheDocument();
+  // Plural since multi-document upload: the dragger now takes several PDFs at
+  // once, and the empty library says so in a line of text rather than a graphic.
+  expect(screen.getByText(/click or drag pdf files/i)).toBeInTheDocument();
+  expect(screen.getByText(/no documents yet/i)).toBeInTheDocument();
   await settle();
 });
 
@@ -154,5 +162,113 @@ test("the bell opens the inbox, and clicking a message marks it read", async () 
   // Identity first: an inbox that leaked another client's message id would be
   // the whole multi-tenant story failing, so the arguments are checked too.
   expect(dailyApi.markMessageRead.mock.calls[0][1]).toBe("m-daily-1");
+  await settle();
+});
+
+/* ---- a question lands before its answer ---------------------------------- */
+
+// A promise whose settle switch is handed to the test body. The point of these
+// two tests is the state of the screen *while* a request is in flight, which is
+// invisible if the mock resolves on its own.
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
+
+const HANDBOOK = [
+  { docId: "doc-1", originalName: "handbook.pdf", pageCount: 3, chunkCount: 5, embedder: "local" },
+];
+
+// One /chat per leg now, so the mock has to tell them apart. `legs` in the
+// request is recorded, because the order the two are asked in is part of the
+// behaviour under test.
+const armBackend = ({ documents = HANDBOOK } = {}) => {
+  const rag = deferred();
+  const mcp = deferred();
+  const legsAsked = [];
+
+  axios.get.mockImplementation((url, config) => {
+    if (url.includes("/documents")) return Promise.resolve({ data: { documents } });
+    if (url.includes("/chat")) {
+      legsAsked.push(config.params.legs);
+      return config.params.legs === "mcp" ? mcp.promise : rag.promise;
+    }
+    return Promise.reject(new Error(`unexpected GET ${url}`));
+  });
+
+  return { rag, mcp, legsAsked };
+};
+
+test("shows the question first, then each half of the answer as it arrives", async () => {
+  const { rag, mcp, legsAsked } = armBackend();
+  const { container } = render(<App />);
+
+  // The box is disabled until GET /documents answers, so waiting for its
+  // placeholder is also waiting for the document to be selected.
+  const box = await screen.findByPlaceholderText(/ask across 1 document/i);
+  fireEvent.change(box, { target: { value: "What is the return window?" } });
+  await act(async () => {
+    fireEvent.click(screen.getByText("Ask").closest("button"));
+  });
+
+  // Nothing has been answered and the question is already readable -- the
+  // behaviour that did not exist while one setState carried both.
+  expect(screen.getByText("What is the return window?")).toBeInTheDocument();
+  expect(container.querySelectorAll(".answer-pending")).toHaveLength(2);
+  expect(container.querySelector(".rag-answer")).toBeNull();
+
+  await act(async () => {
+    rag.resolve({
+      data: { ragAnswer: "30 days from delivery.", sources: ["handbook.pdf"] },
+    });
+  });
+  expect(screen.getByText("30 days from delivery.")).toBeInTheDocument();
+  // Scoped to the answer: "handbook.pdf" is also the row in the library above,
+  // and matching both would say nothing about where the tag is.
+  expect(container.querySelector(".answer-sources")).toHaveTextContent("handbook.pdf");
+  // One block filled, one still working: the two halves are no longer joined.
+  expect(container.querySelectorAll(".answer-pending")).toHaveLength(1);
+  expect(container.querySelector(".mcp-answer")).toBeNull();
+
+  await act(async () => {
+    mcp.resolve({ data: { mcpAnswer: "USPS allows 7 business days." } });
+  });
+  expect(screen.getByText(/USPS allows 7 business days/)).toBeInTheDocument();
+  expect(container.querySelectorAll(".answer-pending")).toHaveLength(0);
+
+  // One leg per request, in the order the two blocks are read.
+  expect(legsAsked).toEqual(["rag", "mcp"]);
+  await settle();
+});
+
+test("does not spend a web search when the documents cannot answer", async () => {
+  const { rag, legsAsked } = armBackend();
+  const { container } = render(<App />);
+
+  const box = await screen.findByPlaceholderText(/ask across 1 document/i);
+  fireEvent.change(box, { target: { value: "Summarise the warranty." } });
+  await act(async () => {
+    fireEvent.click(screen.getByText("Ask").closest("button"));
+  });
+
+  await act(async () => {
+    rag.reject(
+      Object.assign(new Error("request failed"), {
+        response: { data: { error: "document not found" } },
+      })
+    );
+  });
+
+  expect(screen.getByText("document not found")).toBeInTheDocument();
+  // One request, not two: asking the web about a question the documents could
+  // not even read would spend a search unit on an answer with nothing beside it.
+  expect(legsAsked).toEqual(["rag"]);
+  // And no block is left spinning for an answer that will never come.
+  expect(container.querySelectorAll(".answer-pending")).toHaveLength(0);
   await settle();
 });

@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Checkbox, Empty, Tag, Tooltip } from "antd";
+import { Button, Checkbox, Tag, Tooltip } from "antd";
 import { DeleteOutlined } from "@ant-design/icons";
 
 /**
@@ -20,11 +20,15 @@ const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 const DocumentLibrary = ({ documents, selectedDocIds, onToggle, onDelete }) => {
   if (!documents.length) {
+    // A line of quiet text, not antd's <Empty>: the uploader right above already
+    // carries the big call-to-action illustration, so a second (and with the QA
+    // list, a third) grey picture on the same screen reads as clutter, not
+    // guidance. The words keep the one thing worth saying: upload, then select.
     return (
-      <Empty
-        className="library-empty"
-        description="No documents yet. Upload one or more PDFs, then pick which ones each question reads from."
-      />
+      <p className="library-empty">
+        No documents yet — PDFs you upload will be listed here, and you pick which
+        ones each question reads from.
+      </p>
     );
   }
 

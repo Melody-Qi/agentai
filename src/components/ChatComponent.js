@@ -46,7 +46,14 @@ export const initSpeech = async () => {
   }
 };
 
-const ChatComponent = ({ clientId, docIds, handleResp, isLoading, setIsLoading }) => {
+const ChatComponent = ({
+  clientId,
+  docIds,
+  onAskStart, // appends the question to the conversation, returns its id
+  onAnswerPart, // merges one finished half of the answer into that question
+  isLoading,
+  setIsLoading,
+}) => {
   const [searchValue, setSearchValue] = useState("");
   const [isChatModeOn, setIsChatModeOn] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -187,23 +194,55 @@ const ChatComponent = ({ clientId, docIds, handleResp, isLoading, setIsLoading }
 
     setSearchValue("");
     setIsLoading(true);
+    // On screen before either answer exists -- this is the whole point of asking
+    // in two steps.
+    const askId = onAskStart(trimmedQuestion);
+
+    // Shared by both requests. docId is comma-separated: the server splits it
+    // back into a list and searches each one separately. A single id still
+    // works -- it is simply a list of one.
+    const sharedParams = { docId: docIds.join(","), question: trimmedQuestion };
+
     try {
-      const response = await axios.get(`${DOMAIN}/chat`, {
+      // Leg 1: the answer from the user's own documents. Fires first and lands
+      // first, so it is on screen while the web search is still running.
+      const ragResponse = await axios.get(`${DOMAIN}/chat`, {
         headers: { "x-client-id": clientId },
-        // Comma-separated: the server splits it back into a list and searches each
-        // one separately. A single id still works -- it is simply a list of one.
-        params: { docId: docIds.join(","), question: trimmedQuestion },
+        params: { ...sharedParams, legs: "rag" },
       });
-      handleResp(trimmedQuestion, response.data);
+      onAnswerPart(askId, {
+        ragAnswer: ragResponse.data.ragAnswer,
+        sources: ragResponse.data.sources,
+      });
       if (isChatModeOn) {
-        talk(response.data?.ragAnswer);
+        talk(ragResponse.data?.ragAnswer);
+      }
+
+      try {
+        // Leg 2: the same question, answered from the open web. Awaited after the
+        // first leg rather than Promise.all'd with it -- the two calls share one
+        // model rate limit, and a 429 that could belong to either is a 429 that
+        // cannot be attributed.
+        const mcpResponse = await axios.get(`${DOMAIN}/chat`, {
+          headers: { "x-client-id": clientId },
+          params: { ...sharedParams, legs: "mcp" },
+        });
+        onAnswerPart(askId, { mcpAnswer: mcpResponse.data.mcpAnswer });
+      } catch (webError) {
+        // Half an answer beats none: the RAG block is already readable, so this
+        // only has to stop the second block from spinning forever.
+        onAnswerPart(askId, {
+          mcpAnswer: webError.response?.data?.error || webError.message || "Request failed",
+        });
       }
     } catch (error) {
-      const answer = {
+      // The RAG leg failed, and there is no second leg without it: asking the web
+      // about a question the documents could not even read would spend a search
+      // unit on an answer with nothing to stand next to it.
+      onAnswerPart(askId, {
         ragAnswer: error.response?.data?.error || error.message || "Request failed",
         mcpAnswer: "N/A",
-      };
-      handleResp(trimmedQuestion, answer);
+      });
     } finally {
       setIsLoading(false);
     }
