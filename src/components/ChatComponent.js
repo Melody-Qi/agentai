@@ -46,11 +46,16 @@ export const initSpeech = async () => {
   }
 };
 
-const ChatComponent = ({ clientId, docId, handleResp, isLoading, setIsLoading }) => {
+const ChatComponent = ({ clientId, docIds, handleResp, isLoading, setIsLoading }) => {
   const [searchValue, setSearchValue] = useState("");
   const [isChatModeOn, setIsChatModeOn] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [speech, setSpeech] = useState();
+
+  // The documents in play for the next question. Plural since multi-document:
+  // these are the ones the user ticked in the library, and the question is asked
+  // across all of them at once rather than against whichever one arrived last.
+  const selectedCount = docIds?.length ?? 0;
 
   const {
     transcript,
@@ -175,8 +180,8 @@ const ChatComponent = ({ clientId, docId, handleResp, isLoading, setIsLoading })
   const onSearch = async (question) => {
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion) return;
-    if (!docId) {
-      message.warning("Please upload and select a PDF first.");
+    if (!selectedCount) {
+      message.warning("Select at least one document in your knowledge base first.");
       return;
     }
 
@@ -185,7 +190,9 @@ const ChatComponent = ({ clientId, docId, handleResp, isLoading, setIsLoading })
     try {
       const response = await axios.get(`${DOMAIN}/chat`, {
         headers: { "x-client-id": clientId },
-        params: { docId, question: trimmedQuestion },
+        // Comma-separated: the server splits it back into a list and searches each
+        // one separately. A single id still works -- it is simply a list of one.
+        params: { docId: docIds.join(","), question: trimmedQuestion },
       });
       handleResp(trimmedQuestion, response.data);
       if (isChatModeOn) {
@@ -239,14 +246,18 @@ const ChatComponent = ({ clientId, docId, handleResp, isLoading, setIsLoading })
       <div className="chat-controls">
         {!isChatModeOn && (
           <Search
-            placeholder={docId ? "Ask a question about the selected PDF" : "Upload a PDF before asking"}
+            placeholder={
+              selectedCount
+                ? `Ask across ${selectedCount} document${selectedCount === 1 ? "" : "s"}`
+                : "Select at least one document before asking"
+            }
             enterButton="Ask"
             size="large"
             onSearch={onSearch}
             loading={isLoading}
             value={searchValue} // Control the value
             onChange={handleChange} // Update the value when changed
-            disabled={!docId}
+            disabled={!selectedCount}
           />
         )}
         <Button
@@ -254,7 +265,7 @@ const ChatComponent = ({ clientId, docId, handleResp, isLoading, setIsLoading })
           size="large"
           danger={isChatModeOn}
           onClick={chatModeClickHandler}
-          disabled={!docId}
+          disabled={!selectedCount}
           style={{ marginLeft: "5px" }}
         >
           Chat Mode: {isChatModeOn ? "On" : "Off"}

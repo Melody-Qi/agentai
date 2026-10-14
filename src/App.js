@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, Layout, Tag, Typography } from "antd";
+import { Badge, Button, Layout, Typography, message } from "antd";
 import { BellOutlined } from "@ant-design/icons";
 import PdfUploader from "./components/PdfUploader";
 import ChatComponent from "./components/ChatComponent";
+import DocumentLibrary from "./components/DocumentLibrary";
 import RenderQA from "./components/RenderQA";
 import DailyPanel from "./components/DailyPanel";
 import * as dailyApi from "./dailyApi";
+import * as documentsApi from "./documentsApi";
 import "./App.css";
 
 const { Header, Content } = Layout;
@@ -38,10 +40,41 @@ function App() {
     localStorage.setItem(CLIENT_KEY, created);
     return created;
   }, []);
-  const [docId, setDocId] = useState(null);
-  const [documentName, setDocumentName] = useState("");
+  // Every PDF this browser has indexed, and the subset the next question reads.
+  // Two lists rather than one because they answer different questions: what
+  // exists, and what is currently in play. Only the second one goes on the wire.
+  //
+  // A new upload is selected automatically -- having just dragged it in is a
+  // strong statement of intent -- but it does NOT clear the conversation the way
+  // the single-document version did. Adding a source no longer invalidates an
+  // answer already given; switching TO and FROM a different set does, and that
+  // is now the user's call rather than ours.
+  const [documents, setDocuments] = useState([]);
+  const [selectedDocIds, setSelectedDocIds] = useState([]);
   const [conversation, setConversation] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // The server is the record of what survived a reload. Its store is in memory,
+  // so a backend restart legitimately returns an empty list -- which is why a
+  // failure here is a console note and not an error banner: being unable to
+  // remember old documents is not an obstacle to uploading new ones.
+  useEffect(() => {
+    let active = true;
+    documentsApi
+      .fetchDocuments(clientId)
+      .then((existing) => {
+        if (!active) return;
+        setDocuments(existing);
+        setSelectedDocIds((previous) => {
+          const known = previous.filter((id) => existing.some((doc) => doc.docId === id));
+          return known.length ? known : existing.map((doc) => doc.docId);
+        });
+      })
+      .catch((error) => console.warn("Could not restore documents:", error.message));
+    return () => {
+      active = false;
+    };
+  }, [clientId]);
 
   // --- the daily assistant (HW5) ------------------------------------------
   // App stays the single state owner (lesson 47's rule): the bell's unread
@@ -138,10 +171,49 @@ function App() {
     [messages]
   );
 
+  // The daily assistant (HW5) still schedules one question against one source, and
+  // widening it is a different feature. It follows the first selected document --
+  // predictable, and shown on the panel -- rather than guessing, refusing to run,
+  // or silently reading everything.
+  const primaryDocId = selectedDocIds[0] ?? null;
+  const primaryDocumentName =
+    documents.find((doc) => doc.docId === primaryDocId)?.originalName ?? "";
+
   const handleUploadSuccess = (documentInfo) => {
-    setDocId(documentInfo.docId);
-    setDocumentName(documentInfo.originalName);
-    setConversation([]);
+    setDocuments((previous) =>
+      previous.some((doc) => doc.docId === documentInfo.docId)
+        ? previous
+        : [...previous, documentInfo]
+    );
+    setSelectedDocIds((previous) =>
+      previous.includes(documentInfo.docId)
+        ? previous
+        : [...previous, documentInfo.docId]
+    );
+  };
+
+  const handleToggleDocument = (docId, selected) => {
+    setSelectedDocIds((previous) =>
+      selected
+        ? previous.includes(docId)
+          ? previous
+          : [...previous, docId]
+        : previous.filter((id) => id !== docId)
+    );
+  };
+
+  // Removed from both lists together, and only after the server agrees. Doing it
+  // the other way round would leave a selected docId with no document behind it,
+  // and the failure mode there is nastier than a slow row: the next question asks
+  // for something that no longer exists and gets a 404 that reads like a bug.
+  const handleDeleteDocument = async (doc) => {
+    try {
+      await documentsApi.deleteDocument(clientId, doc.docId);
+      setDocuments((previous) => previous.filter((item) => item.docId !== doc.docId));
+      setSelectedDocIds((previous) => previous.filter((id) => id !== doc.docId));
+    } catch (error) {
+      message.error(errorText(error));
+    }
   };
 
   const handleResp = (question, answer) => {
@@ -168,13 +240,18 @@ function App() {
       <Content className="app-content">
         <section className="upload-section">
           <PdfUploader clientId={clientId} onUploadSuccess={handleUploadSuccess} />
-          {documentName ? <Tag color="blue">Current document: {documentName}</Tag> : null}
+          <DocumentLibrary
+            documents={documents}
+            selectedDocIds={selectedDocIds}
+            onToggle={handleToggleDocument}
+            onDelete={handleDeleteDocument}
+          />
         </section>
         <RenderQA conversation={conversation} isLoading={isLoading} />
       </Content>
       <ChatComponent
         clientId={clientId}
-        docId={docId}
+        docIds={selectedDocIds}
         handleResp={handleResp}
         isLoading={isLoading}
         setIsLoading={setIsLoading}
@@ -182,8 +259,8 @@ function App() {
       <DailyPanel
         open={dailyOpen}
         onClose={() => setDailyOpen(false)}
-        docId={docId}
-        documentName={documentName}
+        docId={primaryDocId}
+        documentName={primaryDocumentName}
         subscriptions={subscriptions}
         messages={messages}
         busy={dailyBusy}

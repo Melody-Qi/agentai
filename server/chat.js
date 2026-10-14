@@ -122,6 +122,121 @@ const chat = async (filePath, query) => {
   return { text: await answerQuestion(vectorStore, query) };
 };
 
+/* ---------------------------------------------------------------------------
+ * Asking several documents at once
+ *
+ * One document per vector store is the right unit of caching -- each index is
+ * built once and reused. The question is what happens when the user has picked
+ * three of them.
+ *
+ * The naive move is to search one store at a time and concatenate, which is
+ * wrong in a way that is hard to notice: whichever document happens to be
+ * written in the vocabulary of the question wins every slot, so "I asked my
+ * three PDFs" quietly becomes "I asked the one that scored highest", and the
+ * user never learns the other two were ignored.
+ *
+ * So retrieval is per document FIRST and merged SECOND. Every source gets to
+ * nominate CHUNKS_PER_DOC candidates, and only then are the nominations ranked
+ * against each other. A short document can lose the final ranking, but it can
+ * never be absent from it on the grounds that a longer one scored higher.
+ *
+ * `similaritySearchWithScore` returns cosine SIMILARITY (see the `search.similarity`
+ * field in @langchain/classic/vectorstores/memory), so it sorts descending --
+ * the opposite of a distance metric.
+ * ------------------------------------------------------------------------- */
+const CHUNKS_PER_DOC = 4;
+const CONTEXT_CHUNKS = 8;
+
+// Word for word the template answerQuestion already used, so that asking one
+// document through this path produces the same answers it always did.
+const SINGLE_DOC_TEMPLATE = `Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer. Use three sentences maximum and keep the answer as concise as possible.
+
+{context}
+
+Question: {question}
+Helpful Answer:`;
+
+const MULTI_DOC_TEMPLATE = `Use the following pieces of context to answer the question at the end. Each chunk is prefixed with the name of the file it came from, in square brackets. If the documents disagree with each other, say so rather than silently picking one. Name a source in plain prose when it helps -- "the logistics handbook says" -- but never reproduce the bracketed prefix itself. If you don't know the answer, just say that you don't know, don't try to make up an answer. Use three sentences maximum and keep the answer as concise as possible.
+
+{context}
+
+Question: {question}
+Helpful Answer:`;
+
+/**
+ * Steps 4-5 across several cached indexes. Same cost profile as answerQuestion:
+ * the question is embedded once, the documents are not touched.
+ *
+ * @param documents [{ originalName, vectorStore }, ...] already ownership-checked
+ */
+export const answerQuestionFromStores = async (documents, query) => {
+  if (!documents?.length) {
+    throw new Error("no documents selected");
+  }
+
+  // One failed store should not sink the rest: a document whose embedder has
+  // since gone away still leaves the other two able to answer. Those that do
+  // answer carry on; allSettled is what makes "one bad PDF" a partial answer
+  // rather than an error page.
+  const perDocument = await Promise.allSettled(
+    documents.map(async ({ originalName, vectorStore }) => {
+      const hits = await vectorStore.similaritySearchWithScore(query, CHUNKS_PER_DOC);
+      return hits.map(([doc, similarity]) => ({
+        doc,
+        similarity,
+        source: originalName,
+      }));
+    })
+  );
+
+  const ranked = perDocument
+    .filter((result) => result.status === "fulfilled")
+    .flatMap((result) => result.value)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, CONTEXT_CHUNKS);
+
+  if (perDocument.every((result) => result.status === "rejected")) {
+    throw new Error(perDocument[0].reason?.message ?? "every document failed to answer");
+  }
+
+  // The source label goes into the context, not just the code: it is how the
+  // model can say "the 2023 report says X while the 2024 one says Y" instead of
+  // blending the two into one confident, invented figure.
+  //
+  // Only labelled when there is something to disambiguate. With one document the
+  // prefix is noise, and models have a habit of copying it into the answer -- an
+  // answer that opens with "[report.pdf] Refunds take 30 days" reads like a bug.
+  const labelSources = documents.length > 1;
+  const context = ranked
+    .map(({ doc, source }) =>
+      labelSources ? `[${source}]\n${doc.pageContent}` : doc.pageContent
+    )
+    .join("\n\n");
+
+  const session = chatSession({ label: "rag" });
+  const prompt = PromptTemplate.fromTemplate(labelSources ? MULTI_DOC_TEMPLATE : SINGLE_DOC_TEMPLATE);
+  const formattedPrompt = await prompt.format({ context, question: query });
+
+  const response = await session.invoke(formattedPrompt);
+  const answer = contentToText(response.content);
+
+  // Belt and braces for the copying habit above: even told not to, a model will
+  // sometimes open its answer with the label it was given. Stripping it from the
+  // START only is safe -- a bracketed reference mid-answer is the model citing a
+  // source, which is exactly what we asked for.
+  const labelled = documents.map((doc) => doc.originalName).map(escapeRegExp);
+  const prefix = new RegExp(`^\\s*\\[(?:${labelled.join("|")})\\]\\s*`);
+
+  // trim() because models habitually answer "\n\nThe refund window is 30 days".
+  // App.css sets white-space: pre-wrap on the bubble, so unlike most markup those
+  // leading newlines do reach the user as dead space above the first line.
+  return answer.replace(prefix, "").trim();
+};
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export { CHUNKS_PER_DOC, CONTEXT_CHUNKS };
+
 export default chat;
 
 /**

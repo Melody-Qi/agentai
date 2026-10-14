@@ -5,7 +5,7 @@ import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { buildIndex, answerQuestion } from "./chat.js";
+import { buildIndex, answerQuestionFromStores } from "./chat.js";
 import chatMCP, { closeMcpConnection } from "./chat-mcp.js";
 import runAgent from "./chat-agent.js";
 // Imported as a namespace because almost the whole module is in play here: the
@@ -175,9 +175,11 @@ app.post("/upload", assignDocId, upload.single("file"), async (req, res) => {
  *
  * Ours is the same two answers, with three adaptations forced by Lessons 46-48:
  *
- *   a. The RAG call here is answerQuestion(doc.vectorStore, q), not
+ *   a. The RAG call here is answerQuestionFromStores(docs, q), not
  *      chat(filePath, q). Lesson 46 split the pipeline so the index is built on
- *      upload; calling chat() would re-embed the PDF on every question.
+ *      upload; calling chat() would re-embed the PDF on every question. The
+ *      "Stores" form takes a list, which is how one question can span several
+ *      documents -- see chat.js for why each one is searched separately first.
  *   b. The document lookup and the ownership check stay in front of it, so this
  *      route is still scoped to the caller's own uploads.
  *   c. The web search is opt-out-able and never fatal. One call costs one unit
@@ -188,6 +190,29 @@ app.post("/upload", assignDocId, upload.single("file"), async (req, res) => {
  * Read at module scope, after dotenv.config() above -- an ordering that matters.
  * ------------------------------------------------------------------------- */
 const WEB_SEARCH_ENABLED = Boolean(process.env.SERPAPI_KEY);
+
+// Hard ceiling on the whole MCP leg. It belongs here rather than in chat-mcp.js
+// because that module's own CALL_TIMEOUT_MS covers only the client.callTool
+// call: the summarizer that runs afterwards awaits the LLM with no deadline of
+// its own, which is where a slow provider quietly becomes a hung request.
+const WEB_SEARCH_TIMEOUT_MS = Number(process.env.WEB_SEARCH_TIMEOUT_MS) || 45_000;
+
+// Race a promise against a wall-clock deadline. Deliberately not described as
+// cancellation: chatMCP takes no AbortSignal, so a timed-out run keeps going in
+// the background and still spends one search unit. What this buys is the reply --
+// the caller stops waiting and answers with the other leg rather than nothing.
+const withDeadline = (promise, ms, label) => {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${label} timed out after ${ms}ms`)),
+        ms
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+};
 
 const runWebSearch = async (question, searchParam) => {
   // Opt-out via ?search=0. The front end does not send it yet; it exists so the
@@ -201,34 +226,72 @@ const runWebSearch = async (question, searchParam) => {
   }
 
   try {
-    const { text } = await chatMCP(question);
+    const { text } = await withDeadline(
+      chatMCP(question),
+      WEB_SEARCH_TIMEOUT_MS,
+      "MCP web search"
+    );
     return text;
   } catch (error) {
-    // Degrade, do not fail: half an answer is worth more than a 500.
+    // Degrade, do not fail: half an answer is worth more than a 500. This branch
+    // is reached from a normal failure *and* from the deadline above, and it is
+    // the difference between "no web answer" and "no answer at all" -- the RAG
+    // answer is already computed by this point, so without this every slow
+    // lookup would take the one thing that did work down with it.
     console.error("MCP web search failed:", error.message);
     return `Web search failed: ${error.message}`;
   }
 };
 
 // GET /chat?docId=...&question=...&search=0  (header x-client-id)
+//
+// docId accepts a comma-separated list, so one question can span several
+// documents. Passing a single id is still exactly what it always was -- a list of
+// length one -- and anything longer goes through the per-document retrieval in
+// chat.js, which is the part that stops a third document being silently crowded
+// out by the two that scored highest.
 app.get("/chat", async (req, res) => {
   const { docId, question } = req.query;
   if (!docId || !question) {
     return res.status(400).json({ error: "docId and question are required" });
   }
 
-  const doc = getDocument(docId);
+  const requestedIds = [
+    ...new Set(
+      String(docId)
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    ),
+  ];
+  if (!requestedIds.length) {
+    return res.status(400).json({ error: "docId and question are required" });
+  }
+
+  // Resolve and authorize every id BEFORE retrieving from any of them. Doing it
+  // inside the retrieval loop would let a foreign docId ride along behind a
+  // legitimate one and have its contents read on the way past.
+  //
   // 404 rather than 403 on purpose. A 403 would answer "this document exists,
   // it just is not yours", which leaks the existence of other people's data.
   // Not-found and not-yours must look identical from the outside.
-  if (!doc || doc.ownerId !== req.clientId) {
-    return res.status(404).json({ error: "document not found" });
+  const sources = [];
+  for (const id of requestedIds) {
+    const doc = getDocument(id);
+    if (!doc || doc.ownerId !== req.clientId) {
+      return res.status(404).json({ error: "document not found" });
+    }
+    sources.push({
+      docId: doc.docId,
+      originalName: doc.originalName,
+      vectorStore: doc.vectorStore,
+    });
   }
 
-  // Steps 4-5 over the cached store: only the question gets embedded.
+  // Steps 4-5 over the cached stores: only the question gets embedded.
   let text;
   try {
-    text = await answerQuestion(doc.vectorStore, question);
+    text = await answerQuestionFromStores(sources, question);
   } catch (error) {
     // 502, the same code /daily/:id/run uses for the same reason: the request was
     // fine, the thing that writes answers is not. Un-caught, this rejection
@@ -237,7 +300,7 @@ app.get("/chat", async (req, res) => {
     // "Request failed with status code 500" with the real cause nowhere.
     return res
       .status(502)
-      .json({ error: `could not answer from the document: ${error.message}` });
+      .json({ error: `could not answer from the documents: ${error.message}` });
   }
 
   // Then the same question, answered from the open web by a tool in another
@@ -249,6 +312,10 @@ app.get("/chat", async (req, res) => {
   res.send({
     ragAnswer: text,
     mcpAnswer,
+    // Which files the answer was actually read from, echoed back so the UI can
+    // say so. It stops being a nicety the moment more than one document exists:
+    // "read from A and B" is a very different claim from "read from all six".
+    sources: sources.map((source) => source.originalName),
   });
 });
 
@@ -269,7 +336,13 @@ app.get("/chat-mcp", async (req, res) => {
   }
 
   try {
-    const { text } = await chatMCP(question);
+    // Same deadline as /chat uses, for the same reason: without it one slow
+    // provider turns this route into a request that never answers.
+    const { text } = await withDeadline(
+      chatMCP(question),
+      WEB_SEARCH_TIMEOUT_MS,
+      "MCP web search"
+    );
     res.send({ mcpAnswer: text });
   } catch (error) {
     res.status(500).json({ error: `web search failed: ${error.message}` });

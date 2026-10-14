@@ -20,6 +20,16 @@
 .rag-answer, .mcp-answer { max-width: 70%; display: inline-block; padding: 10px; border-radius: 10px; color: #111; white-space: pre-wrap; }
 .rag-answer { background: #e6f7ff; border-left: 4px solid #1890ff; }
 .mcp-answer { background: #f6ffed; border-left: 4px solid #52c41a; }
+/* Markdown-rendered answers arrive as <p>/<ul>/<ol> blocks, and each of those
+   carries a user-agent margin of its own. Un-collapsed they stack: the bubble
+   grows a stray band of empty space top and bottom, and every list item sits a
+   line lower than the word it belongs under. */
+.rag-answer p, .mcp-answer p { margin: 0 0 6px; }
+.rag-answer ul, .mcp-answer ul, .rag-answer ol, .mcp-answer ol { margin: 6px 0; padding-left: 20px; }
+.rag-answer > :first-child, .mcp-answer > :first-child { margin-top: 0; }
+.rag-answer > :last-child, .mcp-answer > :last-child { margin-bottom: 0; }
+.rag-answer code, .mcp-answer code { background: rgba(0,0,0,.06); padding: 1px 4px; border-radius: 4px; }
+.rag-answer a, .mcp-answer a { color: #1677ff; }
 .chat-component { position: fixed; z-index: 10; bottom: 20px; left: 10%; width: 80%; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.96); box-shadow: 0 4px 18px rgba(0,0,0,.14); }
 /* Lesson 48: the lecture used an inline `searchContainer` style; the search box
    flexes so it keeps the width it has in the lecture screenshots, with the two
@@ -51,6 +61,20 @@
 .daily-form-time { flex: 0 0 160px; }
 .daily-form-zone { flex: 1; }
 .daily-form-error { display: block; margin-bottom: 12px; }
+.document-library { margin-top: 16px; text-align: left; }
+.library-empty { color: #888; }
+.library-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.library-count { color: #888; font-size: 12px; }
+.library-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
+.library-row:hover { background: #fafafa; }
+.library-row.is-selected { background: #f0f7ff; }
+.library-row .ant-checkbox-wrapper { flex: 1; min-width: 0; }
+.library-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-meta { display: flex; flex-wrap: wrap; gap: 4px; }
+.library-meta .ant-tag { margin-inline-end: 0; }
+.answer-sources { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.sources-label { font-size: 12px; color: #888; }
+.answer-sources .ant-tag { margin-inline-end: 0; }
 @media (max-width: 600px) {
   .app-content { width: 92%; padding-top: 24px; }
   .user-bubble, .rag-answer, .mcp-answer { max-width: 88%; }
